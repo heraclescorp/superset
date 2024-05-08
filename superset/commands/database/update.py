@@ -133,6 +133,10 @@ class UpdateDatabaseCommand(BaseCommand):
         try:
             schemas = database.get_all_schema_names(ssh_tunnel=ssh_tunnel)
         except Exception as ex:
+            # XXX conditional
+            if 1:
+                db.session.commit()
+                database.db_engine_spec.start_oauth2_dance(database)
             db.session.rollback()
             raise DatabaseConnectionFailedError() from ex
 

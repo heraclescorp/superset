@@ -186,6 +186,15 @@ def get_sql_results(  # pylint: disable=too-many-arguments
                 log_params=log_params,
             )
         except Exception as ex:  # pylint: disable=broad-except
+            query = get_query(query_id)
+            database = query.database
+            print("\n\nBETO 456")
+            print(ex)
+            try:
+                database.db_engine_spec.start_oauth2_dance(database)
+            except OAuth2RedirectError as ex:
+                return handle_query_error(ex, query)
+
             logger.debug("Query %d: %s", query_id, ex)
             stats_logger.incr("error_sqllab_unhandled")
             query = get_query(query_id)

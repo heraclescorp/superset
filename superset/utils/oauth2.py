@@ -188,7 +188,7 @@ class OAuth2ClientConfigSchema(Schema):
     scope = fields.String(required=True)
     redirect_uri = fields.String(
         required=False,
-        load_default=url_for("DatabaseRestApi.oauth2", _external=True),
+        load_default=lambda: url_for("DatabaseRestApi.oauth2", _external=True),
     )
     authorization_request_uri = fields.String(required=True)
     token_request_uri = fields.String(required=True)
