@@ -25,7 +25,7 @@ from sqlalchemy.dialects.postgresql import dialect
 
 from superset import app
 from superset.commands.dataset.exceptions import DatasetNotFoundError
-from superset.connectors.sqla.models import SqlaTable, SqlMetric, TableColumn
+from superset.connectors.sqla.models import Dataset, SqlMetric, TableColumn
 from superset.exceptions import SupersetTemplateException
 from superset.jinja_context import (
     dataset_macro,
@@ -436,7 +436,7 @@ def test_dataset_macro(mocker: MockFixture) -> None:
         SqlMetric(metric_name="cnt", expression="COUNT(*)"),
     ]
 
-    dataset = SqlaTable(
+    dataset = Dataset(
         table_name="old_dataset",
         columns=columns,
         metrics=metrics,
@@ -555,7 +555,7 @@ def test_metric_macro_with_dataset_id(mocker: MockFixture) -> None:
     """
     mock_get_form_data = mocker.patch("superset.views.utils.get_form_data")
     DatasetDAO = mocker.patch("superset.daos.dataset.DatasetDAO")
-    DatasetDAO.find_by_id.return_value = SqlaTable(
+    DatasetDAO.find_by_id.return_value = Dataset(
         table_name="test_dataset",
         metrics=[
             SqlMetric(metric_name="count", expression="COUNT(*)"),
@@ -574,7 +574,7 @@ def test_metric_macro_with_dataset_id_invalid_key(mocker: MockFixture) -> None:
     """
     mock_get_form_data = mocker.patch("superset.views.utils.get_form_data")
     DatasetDAO = mocker.patch("superset.daos.dataset.DatasetDAO")
-    DatasetDAO.find_by_id.return_value = SqlaTable(
+    DatasetDAO.find_by_id.return_value = Dataset(
         table_name="test_dataset",
         metrics=[
             SqlMetric(metric_name="count", expression="COUNT(*)"),
@@ -651,7 +651,7 @@ def test_metric_macro_no_dataset_id_with_context_datasource_id(
     available in the context (url_params.datasource_id).
     """
     DatasetDAO = mocker.patch("superset.daos.dataset.DatasetDAO")
-    DatasetDAO.find_by_id.return_value = SqlaTable(
+    DatasetDAO.find_by_id.return_value = Dataset(
         table_name="test_dataset",
         metrics=[
             SqlMetric(metric_name="macro_key", expression="COUNT(*)"),
@@ -713,7 +713,7 @@ def test_metric_macro_no_dataset_id_with_context_chart_id(mocker: MockFixture) -
         datasource_id=1,
     )
     DatasetDAO = mocker.patch("superset.daos.dataset.DatasetDAO")
-    DatasetDAO.find_by_id.return_value = SqlaTable(
+    DatasetDAO.find_by_id.return_value = Dataset(
         table_name="test_dataset",
         metrics=[
             SqlMetric(metric_name="macro_key", expression="COUNT(*)"),
@@ -768,7 +768,7 @@ def test_metric_macro_no_dataset_id_with_context_chart(mocker: MockFixture) -> N
     """
     ChartDAO = mocker.patch("superset.daos.chart.ChartDAO")
     DatasetDAO = mocker.patch("superset.daos.dataset.DatasetDAO")
-    DatasetDAO.find_by_id.return_value = SqlaTable(
+    DatasetDAO.find_by_id.return_value = Dataset(
         table_name="test_dataset",
         metrics=[
             SqlMetric(metric_name="macro_key", expression="COUNT(*)"),
