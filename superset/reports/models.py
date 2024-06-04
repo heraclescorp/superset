@@ -137,7 +137,9 @@ class ReportSchedule(AuditMixinNullable, ExtraJSONMixin, Model):
     # (Alerts/Reports) M-O to dashboard
     dashboard_id = Column(Integer, ForeignKey("dashboards.id"), nullable=True)
     dashboard = relationship(
-        Dashboard, backref="report_schedules", foreign_keys=[dashboard_id]
+        Dashboard,
+        backref=backref("report_schedules", cascade="all, delete-orphan"),
+        foreign_keys=[dashboard_id],
     )
     # (Alerts) M-O to database
     database_id = Column(Integer, ForeignKey("dbs.id"), nullable=True)
