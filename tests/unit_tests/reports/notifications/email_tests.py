@@ -142,6 +142,54 @@ def test_cta_link_included_by_default() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("target", "should_include_cta"),
+    [
+        ("reports@AVEN.com", True),
+        ("reports@aven.com, external@example.com", False),
+        ("reports@notaven.com", False),
+        ("reports@aven.com.attacker.test", False),
+    ],
+)
+def test_cta_link_is_visible_only_to_aven_recipients(
+    target: str, should_include_cta: bool
+) -> None:
+    from superset.reports.models import ReportRecipients, ReportRecipientType
+    from superset.reports.notifications.base import NotificationContent
+    from superset.reports.notifications.email import EmailNotification
+
+    content = NotificationContent(
+        name="test alert",
+        description="<p>This is a test alert</p>",
+        url="http://example.com/superset/dashboard/1/",
+        header_data={
+            "notification_format": "PNG",
+            "notification_type": "Alert",
+            "editors": [1],
+            "notification_source": None,
+            "chart_id": None,
+            "dashboard_id": None,
+            "slack_channels": None,
+            "execution_id": "test-execution-id",
+        },
+    )
+    email_body = (
+        EmailNotification(
+            recipient=ReportRecipients(
+                type=ReportRecipientType.EMAIL,
+                recipient_config_json=f'{{"target": "{target}"}}',
+            ),
+            content=content,
+        )
+        ._get_content()
+        .body
+    )
+
+    assert ("Explore in Superset" in email_body) is should_include_cta
+    assert (
+        "http://example.com/superset/dashboard/1/" in email_body
+    ) is should_include_cta
+
 def test_cta_link_omitted_when_include_cta_is_false() -> None:
     # `superset.models.helpers`, a dependency of following imports,
     # requires app context

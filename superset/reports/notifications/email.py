@@ -19,7 +19,7 @@ import re
 import textwrap
 from dataclasses import dataclass
 from datetime import datetime
-from email.utils import make_msgid, parseaddr
+from email.utils import getaddresses, make_msgid, parseaddr
 from io import BytesIO
 from typing import IO, Optional
 from zipfile import BadZipFile, ZipFile
@@ -137,6 +137,7 @@ ALLOWED_ATTRIBUTES = {
 }
 ZIP_LOCAL_FILE_HEADER = b"PK\x03\x04"
 
+INTERNAL_EMAIL_DOMAIN = 'aven.com'
 
 @dataclass
 class EmailContent:
@@ -377,6 +378,7 @@ class EmailNotification(BaseNotification):  # pylint: disable=too-few-public-met
         else:
             html_table = ""
 
+
         img_tags = []
         for msgid in images.keys():
             img_tags.append(
@@ -486,6 +488,14 @@ class EmailNotification(BaseNotification):  # pylint: disable=too-few-public-met
         return self.now.strftime(name)
 
     def _get_call_to_action(self) -> str:
+        recipients = getaddresses([self._get_to().replace(";", ",")])
+        if not recipients or any(
+            not address
+            or "@" not in address
+            or address.rsplit("@", 1)[1].casefold() != INTERNAL_EMAIL_DOMAIN
+            for _, address in recipients
+        ):
+            return ""
         return __(current_app.config["EMAIL_REPORTS_CTA"])
 
     def _render_call_to_action_tag(self) -> str:
