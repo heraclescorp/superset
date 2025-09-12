@@ -1363,6 +1363,8 @@ class BaseReportState:
             header_data=header_data,
             slack_retry_deadline=self._get_slack_retry_deadline(),
             include_cta=include_cta,
+            csv_filename=self._report_schedule.csv_filename,
+            email_subject=self._report_schedule.email_subject,
         )
 
     def _send_notification(

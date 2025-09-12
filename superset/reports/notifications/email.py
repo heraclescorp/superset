@@ -15,6 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 import logging
+import re
 import textwrap
 from dataclasses import dataclass
 from datetime import datetime
@@ -39,6 +40,72 @@ from superset.utils.decorators import statsd_gauge
 from superset.utils.link_redirect import process_html_links
 
 logger = logging.getLogger(__name__)
+
+
+def replace_date_placeholders(text: str) -> str:
+    """
+    Replace date placeholders in text with current date.
+    Supports user-friendly date format patterns within curly braces.
+    
+    Examples:
+    - {yyyyMMdd} -> 20240912
+    - {yyyy-MM-dd} -> 2024-09-12
+    - {yyMMdd} -> 240912
+    - {yyyyMMdd_HHmmss} -> 20240912_143045
+    - {yyyy/MM/dd} -> 2024/09/12
+    
+    Format codes:
+    - yyyy = 4-digit year, yy = 2-digit year
+    - MM = 2-digit month, M = 1-digit month
+    - dd = 2-digit day, d = 1-digit day
+    - HH = 24-hour format, hh = 12-hour format
+    - mm = minutes, ss = seconds
+    """
+    if not text:
+        return text
+    
+    now = datetime.now()
+    
+    # Convert user-friendly format to Python strftime format
+    def convert_format(user_format):
+        # Replace common user-friendly patterns with Python strftime codes
+        # Use a more robust approach to avoid double replacements
+        replacements = [
+            ('yyyy', '%Y'),  # 4-digit year
+            ('yy', '%y'),    # 2-digit year
+            ('MM', '%m'),    # 2-digit month
+            ('dd', '%d'),    # 2-digit day
+            ('HH', '%H'),    # 24-hour format
+            ('hh', '%I'),    # 12-hour format
+            ('mm', '%M'),    # minutes
+            ('ss', '%S'),    # seconds
+        ]
+        
+        python_format = user_format
+        for user_code, python_code in replacements:
+            python_format = python_format.replace(user_code, python_code)
+        
+        # Handle single character patterns after double character patterns
+        python_format = re.sub(r'(?<!%)(?<![a-zA-Z])M(?!%)(?![a-zA-Z])', '%m', python_format)
+        python_format = re.sub(r'(?<!%)(?<![a-zA-Z])d(?!%)(?![a-zA-Z])', '%d', python_format)
+        
+        return python_format
+    
+    # Find all date format patterns like {yyyyMMdd}, {yyyy-MM-dd}, etc.
+    def replace_date_format(match):
+        user_format = match.group(1)  # Extract the format string inside braces
+        try:
+            python_format = convert_format(user_format)
+            return now.strftime(python_format)
+        except ValueError:
+            # If the format is invalid, return the original placeholder
+            return match.group(0)
+    
+    # Replace patterns like {yyyyMMdd}, {yyyy-MM-dd}, etc.
+    text = re.sub(r'\{([^}]+)\}', replace_date_format, text)
+    
+    return text
+
 
 TABLE_TAGS = {"table", "th", "tr", "td", "thead", "tbody", "tfoot"}
 TABLE_ATTRIBUTES = {"colspan", "rowspan", "halign", "border", "class"}
@@ -352,13 +419,16 @@ class EmailNotification(BaseNotification):  # pylint: disable=too-few-public-met
         attachment_data: dict[str, bytes | str] | None = None
         if self._content.csv:
             extension = _get_csv_attachment_extension(self._content.csv)
-            attachment_data = {
-                __(
+            csv_name = self._content.csv_filename
+            if csv_name:
+                csv_name = replace_date_placeholders(csv_name)
+            else:
+                csv_name = __(
                     "%(name)s.%(extension)s",
                     name=self._name,
                     extension=extension,
-                ): self._content.csv
-            }
+                )
+            attachment_data = {csv_name: self._content.csv}
         elif self._content.xlsx:
             extension = _get_xlsx_attachment_extension(self._content.xlsx)
             attachment_data = {
@@ -394,6 +464,13 @@ class EmailNotification(BaseNotification):  # pylint: disable=too-few-public-met
             return __(
                 "Report Failed - All Retries Exhausted: %(name)s",
                 name=self._name,
+            )
+        if self._content.email_subject:
+            subject = replace_date_placeholders(self._content.email_subject)
+            return __(
+                "%(prefix)s %(title)s",
+                prefix=current_app.config["EMAIL_REPORTS_SUBJECT_PREFIX"],
+                title=subject,
             )
         return __(
             "%(prefix)s %(title)s",

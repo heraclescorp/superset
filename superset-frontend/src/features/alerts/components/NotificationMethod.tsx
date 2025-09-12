@@ -140,6 +140,10 @@ const TRANSLATIONS = {
   EMAIL_SUBJECT_ERROR_TEXT: t(
     'Please enter valid text. Spaces alone are not permitted.',
   ),
+  CSV_FILENAME_NAME: t('CSV filename (optional)'),
+  CSV_FILENAME_ERROR_TEXT: t(
+    'Please enter valid text. Spaces alone are not permitted.',
+  ),
 };
 
 interface NotificationMethodProps {
@@ -153,6 +157,9 @@ interface NotificationMethodProps {
   email_subject: string;
   defaultSubject: string;
   setErrorSubject: (hasError: boolean) => void;
+  csv_filename: string;
+  defaultCsvFilename: string;
+  setErrorCsvFilename: (hasError: boolean) => void;
 }
 
 export const mapSlackValues = ({
@@ -264,6 +271,9 @@ export const NotificationMethod: FunctionComponent<NotificationMethodProps> = ({
   email_subject,
   defaultSubject,
   setErrorSubject,
+  csv_filename,
+  defaultCsvFilename,
+  setErrorCsvFilename,
 }) => {
   const { method, recipients, cc, bcc, options } = setting || {};
   const [recipientValue, setRecipientValue] = useState<string>(
@@ -566,6 +576,20 @@ export const NotificationMethod: FunctionComponent<NotificationMethodProps> = ({
     }
   };
 
+  const onCsvFilenameChange = (
+    event: ChangeEvent<HTMLTextAreaElement | HTMLInputElement>,
+  ) => {
+    const { value } = event.target;
+
+    if (onInputChange) {
+      onInputChange(event);
+    }
+
+    const hasError = value.length > 0 && value.trim().length === 0;
+    if (setErrorCsvFilename) {
+      setErrorCsvFilename(hasError);
+    }
+  };
   return (
     <StyledNotificationMethod>
       <div className="inline-container">
@@ -623,6 +647,24 @@ export const NotificationMethod: FunctionComponent<NotificationMethodProps> = ({
                     </div>
                   )}
                 </>
+              </StyledInputContainer>
+            </div>
+          ) : null}
+          {method === NotificationMethodOption.Email ? (
+            <div className="inline-container">
+              <StyledInputContainer>
+                <div className="control-label">
+                  {TRANSLATIONS.CSV_FILENAME_NAME}
+                </div>
+                <div className="input-container">
+                  <Input
+                    type="text"
+                    name="csv_filename"
+                    value={csv_filename}
+                    placeholder={defaultCsvFilename}
+                    onChange={onCsvFilenameChange}
+                  />
+                </div>
               </StyledInputContainer>
             </div>
           ) : null}

@@ -87,6 +87,7 @@ include_cta_description = (
     "Whether to include the call-to-action link back to Superset "
     "(e.g. 'Explore in Superset') in the delivered notifications"
 )
+csv_filename_description = "The CSV filename for report attachments"
 context_markdown_description = "Markdown description"
 crontab_description = (
     "A CRON expression."
@@ -282,6 +283,14 @@ class ReportSchedulePostSchema(RetryFieldStripMixin, Schema):
         metadata={
             "description": email_subject_description,
             "example": "[Report]  Report name: Dashboard or chart name",
+        },
+        allow_none=True,
+        required=False,
+    )
+    csv_filename = fields.String(
+        metadata={
+            "description": csv_filename_description,
+            "example": "sales_report.csv",
         },
         allow_none=True,
         required=False,
@@ -498,6 +507,14 @@ class ReportSchedulePutSchema(RetryFieldStripMixin, Schema):
         metadata={
             "description": email_subject_description,
             "example": "[Report]  Report name: Dashboard or chart name",
+        },
+        allow_none=True,
+        required=False,
+    )
+    csv_filename = fields.String(
+        metadata={
+            "description": csv_filename_description,
+            "example": "sales_report.csv",
         },
         allow_none=True,
         required=False,

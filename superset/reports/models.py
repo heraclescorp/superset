@@ -187,6 +187,7 @@ class ReportSchedule(AuditMixinNullable, ExtraJSONMixin, Model):
     extra: ReportScheduleExtra  # type: ignore
 
     email_subject = Column(String(255))
+    csv_filename = Column(String(255))
 
     # (Alerts/Reports) Include the call-to-action link back to Superset in
     # notifications? NULL is treated as True.

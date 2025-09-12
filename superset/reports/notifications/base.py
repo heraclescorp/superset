@@ -40,6 +40,8 @@ class NotificationContent:
     retry_attempt: Optional[int] = None
     retry_max_attempts: Optional[int] = None
     include_cta: bool = True  # include the call-to-action link back to Superset
+    csv_filename: Optional[str] = None  # custom CSV filename
+    email_subject: Optional[str] = None  # custom email subject
 
     @property
     def has_attachments(self) -> bool:

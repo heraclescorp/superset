@@ -156,6 +156,7 @@ class ReportScheduleRestApi(BaseSupersetModelRestApi):
         "send_failed_reports",
         "retry_notify_owners",
         "retry_notify_recipients",
+        "csv_filename",
     ]
     show_select_columns = show_columns + [
         "chart.datasource_id",
