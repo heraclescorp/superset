@@ -10,6 +10,26 @@ import { ListExperiment } from '../types';
 import { fmtNum, timeAgo, parseListRow } from '../utils';
 import Shell from './Shell';
 
+type SortKey = 'startTime' | 'exposedCount' | 'name' | 'status';
+type SortDir = 'asc' | 'desc';
+
+function comparator(key: SortKey, dir: SortDir) {
+  const mul = dir === 'asc' ? 1 : -1;
+  return (a: ListExperiment, b: ListExperiment) => {
+    let av: any = a[key];
+    let bv: any = b[key];
+    if (key === 'startTime') {
+      av = av ? new Date(av as string).getTime() : 0;
+      bv = bv ? new Date(bv as string).getTime() : 0;
+    }
+    if (typeof av === 'string') av = av.toLowerCase();
+    if (typeof bv === 'string') bv = bv.toLowerCase();
+    if (av < bv) return -1 * mul;
+    if (av > bv) return 1 * mul;
+    return 0;
+  };
+}
+
 export default function ExperimentListView({
   rows,
   height,
@@ -18,15 +38,20 @@ export default function ExperimentListView({
   height: number;
 }) {
   const [search, setSearch] = useState('');
+  const [sortKey, setSortKey] = useState<SortKey>('startTime');
+  const [sortDir, setSortDir] = useState<SortDir>('desc');
+
   const experiments = useMemo(() => rows.map(parseListRow), [rows]);
   const filtered = useMemo(
     () =>
-      experiments.filter(
-        e =>
-          e.name.toLowerCase().includes(search.toLowerCase()) ||
-          e.id.includes(search),
-      ),
-    [experiments, search],
+      experiments
+        .filter(
+          e =>
+            e.name.toLowerCase().includes(search.toLowerCase()) ||
+            e.id.includes(search),
+        )
+        .sort(comparator(sortKey, sortDir)),
+    [experiments, search, sortKey, sortDir],
   );
 
   const handleSelect = (exp: ListExperiment) => {
@@ -34,7 +59,19 @@ export default function ExperimentListView({
     window.location.href = exp.chartUrl;
   };
 
-  const thStyle: React.CSSProperties = {
+  const handleSort = (key: SortKey) => {
+    if (sortKey === key) {
+      setSortDir(d => (d === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortKey(key);
+      setSortDir(key === 'name' ? 'asc' : 'desc');
+    }
+  };
+
+  const sortArrow = (key: SortKey) =>
+    sortKey === key ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '';
+
+  const thBase: React.CSSProperties = {
     padding: '8px 12px',
     fontSize: 11,
     fontWeight: 600,
@@ -42,7 +79,10 @@ export default function ExperimentListView({
     color: '#9ca3af',
     borderBottom: '2px solid #e5e7eb',
     textAlign: 'left',
+    cursor: 'pointer',
+    userSelect: 'none',
   };
+  const thActive: React.CSSProperties = { ...thBase, color: '#374151' };
   const tdStyle: React.CSSProperties = {
     padding: '10px 12px',
     borderBottom: '1px solid #f3f4f6',
@@ -81,11 +121,11 @@ export default function ExperimentListView({
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>
           <tr>
-            <th style={thStyle}>Experiment</th>
-            <th style={thStyle}>Status</th>
-            <th style={thStyle}>Exposed</th>
-            <th style={thStyle}>Groups</th>
-            <th style={thStyle}>Started</th>
+            <th style={sortKey === 'name' ? thActive : thBase} onClick={() => handleSort('name')}>Experiment{sortArrow('name')}</th>
+            <th style={sortKey === 'status' ? thActive : thBase} onClick={() => handleSort('status')}>Status{sortArrow('status')}</th>
+            <th style={sortKey === 'exposedCount' ? thActive : thBase} onClick={() => handleSort('exposedCount')}>Exposed{sortArrow('exposedCount')}</th>
+            <th style={thBase}>Groups</th>
+            <th style={sortKey === 'startTime' ? thActive : thBase} onClick={() => handleSort('startTime')}>Started{sortArrow('startTime')}</th>
           </tr>
         </thead>
         <tbody>

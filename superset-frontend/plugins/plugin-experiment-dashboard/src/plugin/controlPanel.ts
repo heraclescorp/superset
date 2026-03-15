@@ -56,6 +56,16 @@ const config: ControlPanelConfig = {
         ],
         ['adhoc_filters'],
         ['row_limit'],
+        [
+          {
+            name: 'alloc',
+            config: {
+              type: 'HiddenControl',
+              label: t('Allocation'),
+              default: '',
+            },
+          },
+        ],
       ],
     },
   ],

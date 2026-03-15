@@ -382,15 +382,19 @@ def main():
             return re.sub(r'(?<!^)[_\s]*([A-Z]+)', r'_\1', name).lower()
 
         def is_eligible(row):
-            """Eligible = 2+ groups, or 1 group with <10 buckets. Not expired."""
+            """Eligible = 2+ groups (or 1 group with <10 buckets).
+            Active experiments or completed within the last 3 months."""
+            from dateutil import parser as dtparser
+            from dateutil.relativedelta import relativedelta
+
             end_time = row.get("END_TIME")
             if end_time is not None and str(end_time).strip():
                 try:
-                    from dateutil import parser as dtparser
                     et = dtparser.parse(str(end_time))
                     if et.tzinfo is None:
                         et = et.replace(tzinfo=timezone.utc)
-                    if et < datetime.now(timezone.utc):
+                    cutoff = datetime.now(timezone.utc) - relativedelta(months=3)
+                    if et < cutoff:
                         return False
                 except Exception:
                     pass

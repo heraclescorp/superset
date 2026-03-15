@@ -64,7 +64,7 @@ export default function ExperimentDetailView({
         </p>
       </div>
 
-      {/* SRM check */}
+      {/* Traffic balance check (SRM = Sample Ratio Mismatch) */}
       {stats.srm && (
         <div style={{
           padding: '12px 16px', borderRadius: 8, marginBottom: 20,
@@ -73,7 +73,7 @@ export default function ExperimentDetailView({
           fontSize: 13, display: 'flex', justifyContent: 'space-between', alignItems: 'center',
         }}>
           <span>
-            <strong>SRM Check:</strong>{' '}
+            <strong>Traffic Balance Check:</strong>{' '}
             {stats.srm.passed ? '✅ Passed' : '⚠️ Failed'}
             {!stats.srm.passed && <span style={{ color: '#b91c1c' }}> — Traffic split may be imbalanced</span>}
           </span>

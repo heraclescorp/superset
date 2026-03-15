@@ -26,19 +26,21 @@ import { ExperimentDashboardProps } from '../types';
  * We pass the raw data and metric labels so the chart can render CI bars.
  */
 export default function transformProps(chartProps: ChartProps): ExperimentDashboardProps {
-  const { width, height, queriesData, formData } = chartProps;
+  const { width, height, queriesData, formData, rawFormData } = chartProps;
   const data = queriesData?.[0]?.data || [];
 
   // Extract metric labels for the chart to know which columns are metrics
   const metricLabels = (formData?.metrics || []).map((m: any) => getMetricLabel(m));
   const groupbyColumns = formData?.groupby || [];
 
+  // alloc is stored in chart params for SRM expected ratios
+  const alloc = formData?.alloc || (rawFormData as any)?.alloc || '';
+
   return {
     width, height, experiments: data, metricLabels, groupbyColumns,
     urlParams: {
       ...(formData?.url_params || {}),
-      // Per-experiment charts store allocation in formData.alloc
-      ...(formData?.alloc ? { alloc: formData.alloc } : {}),
+      ...(alloc ? { alloc } : {}),
     },
   };
 }
