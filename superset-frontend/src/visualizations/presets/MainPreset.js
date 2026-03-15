@@ -83,6 +83,7 @@ import { HandlebarsChartPlugin } from '@superset-ui/plugin-chart-handlebars';
 import { FilterPlugins } from 'src/constants';
 import TimeTableChartPlugin from '../TimeTable';
 import { AvenABChartPlugin } from '../../../plugins/plugin-aven-ab-chart/src';
+import { ExperimentDashboardPlugin } from '../../../plugins/plugin-experiment-dashboard/src';
 
 export default class MainPreset extends Preset {
   constructor() {
@@ -181,6 +182,7 @@ export default class MainPreset extends Preset {
         ...experimentalPlugins,
 
         new AvenABChartPlugin().configure({ key: 'aven_ab' }),
+        new ExperimentDashboardPlugin().configure({ key: 'experiment_ab' }),
       ],
     });
   }
