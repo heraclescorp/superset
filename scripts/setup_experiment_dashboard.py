@@ -53,7 +53,7 @@ app = create_app()
 
 # Cutoff date: only show experiments starting after the ABTestOverride data fix.
 # Adjust this date if needed.
-EXPOSURE_CUTOFF = "2025-01-01"
+EXPOSURE_CUTOFF = "2026-03-03"  # Date after override logging fix (PR #66683) was deployed
 
 EXPOSURES_SQL = f"""\
 WITH exp_spec AS (
