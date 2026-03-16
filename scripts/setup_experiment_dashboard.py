@@ -51,11 +51,12 @@ from superset.app import create_app
 
 app = create_app()
 
-# Cutoff date: only include exposure analytics events logged after the ABTestOverride
-# logging fix (PR #66683). Events before this date may have bogus override data.
-EXPOSURE_CUTOFF = "2026-03-03"  # Day after override logging fix was deployed
+# Note: DIM_LOAN_APP_AB_EXPERIMENT_EXPOSURES_V2 has no timestamp column,
+# so we cannot filter by exposure event date. The V2 table is rebuilt by ETL
+# and should contain clean data post-override-fix (PR #66683, deployed 2026-03-02).
+# If stale pre-fix data appears, the ETL pipeline needs to be re-run.
 
-EXPOSURES_SQL = f"""\
+EXPOSURES_SQL = """\
 WITH exp_spec AS (
   SELECT id AS experiment_spec_id, start_time, end_time
   FROM postgres_rds_wal_public.experiment_spec
@@ -88,10 +89,9 @@ JOIN exp_spec USING (experiment_spec_id)
 LEFT JOIN etl_auto_gen_tables.dim_loan_app_event dlae ON e.LOAN_APPLICATION_ID = dlae.LOAN_APPLICATION_ID
 LEFT JOIN etl_auto_gen_tables.dim_loan_app dla ON e.LOAN_APPLICATION_ID = dla.LOAN_APPLICATION_ID
 LEFT JOIN etl_auto_gen_tables.fact_underwriting fu ON e.LOAN_APPLICATION_ID = fu.LOAN_APPLICATION_ID AND fu.IS_SELECTED_POLICY = TRUE
-WHERE e.CREATED_AT >= '{EXPOSURE_CUTOFF}'::DATE
 """
 
-EXPERIMENT_LIST_SQL = f"""\
+EXPERIMENT_LIST_SQL = """\
 SELECT
   es.ID,
   es.NAME,
@@ -111,7 +111,6 @@ FROM FIVETRAN_DATABASE.POSTGRES_RDS_WAL_PUBLIC.EXPERIMENT_SPEC es
 INNER JOIN (
   SELECT EXPERIMENT_SPEC_ID, COUNT(*) AS EXPOSED_CNT
   FROM FIVETRAN_DATABASE.ETL_AUTO_GEN_TABLES.DIM_LOAN_APP_AB_EXPERIMENT_EXPOSURES_V2
-  WHERE CREATED_AT >= '{EXPOSURE_CUTOFF}'::DATE
   GROUP BY 1
 ) ex ON es.ID = ex.EXPERIMENT_SPEC_ID
 LEFT JOIN (
@@ -556,10 +555,9 @@ def main():
         # Only count exposures after the override logging fix date
         exposed_counts = {}
         try:
-            ec_df = sf_db.get_df(f"""
+            ec_df = sf_db.get_df("""
                 SELECT EXPERIMENT_SPEC_ID, COUNT(*) AS CNT
                 FROM FIVETRAN_DATABASE.ETL_AUTO_GEN_TABLES.DIM_LOAN_APP_AB_EXPERIMENT_EXPOSURES_V2
-                WHERE CREATED_AT >= '{EXPOSURE_CUTOFF}'::DATE
                 GROUP BY 1
             """)
             for _, row in ec_df.iterrows():
@@ -623,7 +621,6 @@ FROM FIVETRAN_DATABASE.POSTGRES_RDS_WAL_PUBLIC.EXPERIMENT_SPEC es
 INNER JOIN (
   SELECT EXPERIMENT_SPEC_ID, COUNT(*) AS EXPOSED_CNT
   FROM FIVETRAN_DATABASE.ETL_AUTO_GEN_TABLES.DIM_LOAN_APP_AB_EXPERIMENT_EXPOSURES_V2
-  WHERE CREATED_AT >= '{EXPOSURE_CUTOFF}'::DATE
   GROUP BY 1
 ) ex ON es.ID = ex.EXPERIMENT_SPEC_ID
 WHERE es.START_TIME IS NOT NULL
@@ -653,7 +650,6 @@ ORDER BY es.START_TIME DESC
         print(f"    - experiment_list (id={ds_list.id})")
         print(f"    - experiment_exposures (id={ds_exposures.id})")
         print(f"    - {charts_created} per-experiment charts")
-        print(f"\n  Cutoff date: {EXPOSURE_CUTOFF}")
 
 
 if __name__ == "__main__":
