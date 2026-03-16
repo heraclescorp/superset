@@ -35,7 +35,6 @@ jobs:
           brew install norwoodj/tap/helm-docs
       - name: pre-commit
         run: |
-          pip install nodeenv --upgrade
           if ! pre-commit run --all-files; then
             git status
             git diff
