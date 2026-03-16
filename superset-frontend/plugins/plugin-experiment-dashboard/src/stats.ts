@@ -287,14 +287,8 @@ export function computeAggregatedStats(
     );
     const grandTotal = totals.reduce((s, v) => s + v, 0);
 
-    // Parse allocation: "groupName:buckets,groupName:buckets"
-    // Implicit control gets remaining buckets out of 10
-    // Try formData url_params first, fall back to window.location
-    const alloc =
-      allocParam ||
-      (typeof window !== 'undefined'
-        ? new URLSearchParams(window.location.search).get('alloc')
-        : null);
+    // Parse allocation from chart params (set by pipeline at chart creation)
+    const alloc = allocParam || null;
     const expectedBuckets = new Map<string, number>();
     if (alloc) {
       let usedBuckets = 0;
@@ -443,11 +437,8 @@ export function computeAggregatedStats(
       return { name: vName, total: vTotal, metrics };
     });
 
-  // Extract experiment ID from URL since aggregated data may not have it
-  const experimentId =
-    typeof window !== 'undefined'
-      ? new URLSearchParams(window.location.search).get('experiment_id') || '—'
-      : '—';
+  // Experiment ID is shown in the chart title (baked in by pipeline)
+  const experimentId = '—';
 
   return {
     groupNames,

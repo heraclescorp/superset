@@ -21,29 +21,13 @@ import { buildQueryContext, QueryFormData } from '@superset-ui/core';
 /**
  * Builds a QueryContext using standard Superset metrics + groupby.
  *
- * Per-experiment charts have their own adhoc_filters baked in by the pipeline.
- * If experiment_id is present in the URL (legacy), it's injected as a WHERE filter.
+ * Per-experiment charts have their experiment filter baked into adhoc_filters
+ * at creation time by the pipeline — no runtime filter injection needed.
  */
 export default function buildQuery(formData: QueryFormData) {
-  const extraFilters: { col: string; op: string; val: number }[] = [];
-  const experimentId =
-    formData.url_params?.experiment_id ||
-    (typeof window !== 'undefined'
-      ? new URLSearchParams(window.location.search).get('experiment_id')
-      : null);
-
-  if (experimentId) {
-    extraFilters.push({
-      col: 'EXPERIMENT_SPEC_ID',
-      op: '==',
-      val: Number(experimentId),
-    });
-  }
-
   return buildQueryContext(formData, baseQueryObject => [
     {
       ...baseQueryObject,
-      filters: [...(baseQueryObject.filters || []), ...extraFilters],
       is_timeseries: false,
     },
   ]);
