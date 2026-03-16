@@ -1,41 +1,25 @@
-# plugin-aven-ab-chart
+# plugin-experiment-dashboard
 
-This is the Plugin Aven Ab Chart Superset Chart Plugin.
+Superset chart plugin for A/B experiment analysis. Provides two views:
 
-### Usage
+- **List view** — Searchable, sortable table of experiments with status, exposure counts, group allocation, and links to per-experiment charts.
+- **Detail view** — Full funnel analysis for a single experiment: traffic balance check, variant comparison with confidence intervals, frequentist and Bayesian statistics.
 
-To build the plugin, run the following commands:
+### Setup
 
-```
-npm ci
-npm run build
-```
+The plugin is registered as a workspace dependency in `superset-frontend/package.json`. No extra install steps needed — it's built as part of the standard Superset frontend build.
 
-Alternatively, to run the plugin in development mode (=rebuilding whenever changes are made), start the dev server with the following command:
-
-```
-npm run dev
-```
-
-To add the package to Superset, go to the `superset-frontend` subdirectory in your Superset source folder (assuming both the `plugin-aven-ab-chart` plugin and `superset` repos are in the same root directory) and run
-
-```
-npm i -S ../../plugin-aven-ab-chart
-```
-
-After this edit the `superset-frontend/src/visualizations/presets/MainPreset.js` and make the following changes:
+The plugin is registered in `superset-frontend/src/visualizations/presets/MainPreset.js`:
 
 ```js
-import { AvenABChartPlugin } from 'plugin-aven-ab-chart';
+import { ExperimentDashboardPlugin } from '@superset-ui/plugin-experiment-dashboard';
+
+new ExperimentDashboardPlugin().configure({ key: 'experiment_ab' }),
 ```
 
-to import the plugin and later add the following to the array that's passed to the `plugins` property:
+### Development
 
-```js
-new AvenABChartPlugin().configure({ key: 'plugin-aven-ab-chart' }),
-```
-
-After that the plugin should show up when you run Superset, e.g. the development server:
+From `superset-frontend/`:
 
 ```
 npm run dev-server
