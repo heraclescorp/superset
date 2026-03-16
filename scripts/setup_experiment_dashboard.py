@@ -1,16 +1,48 @@
 #!/usr/bin/env python
 """
-Setup script for the Experiment Dashboard.
+LOCAL TESTING ONLY — Do not run in production.
 
-Creates the virtual datasets and dashboards needed for the experiment
-dashboard to function. Run once after database init:
+This script sets up the Experiment Dashboard plugin locally for development
+and testing. Production uses the Prefect pipeline in the heracles repo:
+  aven_python/jobs/jobs/etl/flows/supersetExperimentDashboardSetup.py
 
+What it does:
+  1. Creates two virtual datasets (experiment_list, experiment_exposures)
+  2. Configures 29 saved metrics on the exposures dataset
+  3. Creates per-experiment charts with baked-in adhoc_filters and alloc params
+  4. Creates the list dashboard at /superset/dashboard/experiments/
+  5. Precomputes EXPOSED_COUNT and CHART_URL as inline CASE expressions
+     (avoids slow JOINs over SSO — prod uses live JOINs with LDAP auth)
+
+Prerequisites:
+  - Docker: redis + postgres running (docker-compose up -d)
+  - Superset DB initialized: superset db upgrade && superset init
+  - Snowflake database registered in Superset (uses SSO/externalbrowser auth)
+  - Frontend built: cd superset-frontend && npx webpack --config webpack.config.js --mode development
+
+Usage:
     source venv/bin/activate
+    export SUPERSET_CONFIG_PATH="$PWD/superset_config.py"
     python scripts/setup_experiment_dashboard.py
 
-Requires:
-  - Superset DB initialized (superset db upgrade && superset init)
-  - A Snowflake database connection registered in Superset
+After running:
+    flask run -p 8088 --with-threads --reload
+    Open http://localhost:8088/superset/dashboard/experiments/
+    Login: admin / general
+
+Re-run when:
+  - New experiments are added (to generate charts for them)
+  - Exposure counts change significantly (precomputed values become stale)
+  - Plugin code changes that affect chart params
+
+Architecture notes:
+  - Each eligible experiment gets its own chart (viz_type=experiment_ab)
+  - Eligibility: 2+ groups, or 1 group with <10 buckets (implicit control)
+  - Recently completed experiments (within 3 months) are included
+  - The list dataset uses CASE expressions for CHART_URL and EXPOSED_COUNT
+    to avoid expensive Snowflake JOINs over SSO auth
+  - alloc param (bucket allocation) is stored in each chart's params for
+    the Traffic Balance Check (SRM)
 """
 import json
 import sys
