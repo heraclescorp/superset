@@ -39,6 +39,7 @@ from importlib.resources import files
 from typing import Any, Callable, Literal, TYPE_CHECKING, TypedDict
 
 import click
+import pkg_resources
 from celery.schedules import crontab
 from flask import Blueprint
 from flask_appbuilder.security.manager import AUTH_DB
@@ -85,7 +86,7 @@ EVENT_LOGGER = DBEventLogger()
 
 SUPERSET_LOG_VIEW = True
 
-BASE_DIR = str(files("superset"))
+BASE_DIR = pkg_resources.resource_filename("superset", "")
 if "SUPERSET_HOME" in os.environ:
     DATA_DIR = os.environ["SUPERSET_HOME"]
 else:
