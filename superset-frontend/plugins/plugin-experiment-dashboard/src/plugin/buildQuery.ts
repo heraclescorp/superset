@@ -25,7 +25,7 @@ import { buildQueryContext, QueryFormData } from '@superset-ui/core';
  * If experiment_id is present in the URL (legacy), it's injected as a WHERE filter.
  */
 export default function buildQuery(formData: QueryFormData) {
-  const extraFilters: any[] = [];
+  const extraFilters: { col: string; op: string; val: number }[] = [];
   const experimentId =
     formData.url_params?.experiment_id ||
     (typeof window !== 'undefined'

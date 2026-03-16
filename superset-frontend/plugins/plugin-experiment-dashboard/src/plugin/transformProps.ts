@@ -38,7 +38,8 @@ export default function transformProps(
   const groupbyColumns = formData?.groupby || [];
 
   // alloc is stored in chart params for SRM expected ratios
-  const alloc = formData?.alloc || (rawFormData as any)?.alloc || '';
+  const alloc =
+    formData?.alloc || (rawFormData as Record<string, unknown>)?.alloc || '';
 
   return {
     width,

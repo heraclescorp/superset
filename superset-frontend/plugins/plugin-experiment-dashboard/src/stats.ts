@@ -75,6 +75,47 @@ export function normalInvCdf(p: number): number {
 
 // ── Funnel stage definitions matching the exposure dataset IS_* columns ──────
 
+/**
+ * Chi-squared survival function (1 - CDF) via the regularized lower
+ * incomplete gamma function.  Works for any degrees of freedom >= 1.
+ *
+ * Uses the series expansion of the lower gamma: P(a,x) = Σ x^n / Γ(a+n+1).
+ */
+export function chiSquaredPValue(chiSq: number, df: number): number {
+  if (chiSq <= 0 || df <= 0) return 1;
+  const a = df / 2;
+  const x = chiSq / 2;
+  // Log-gamma via Lanczos approximation
+  function logGamma(z: number): number {
+    const g = 7;
+    const coef = [
+      0.99999999999980993, 676.5203681218851, -1259.1392167224028,
+      771.32342877765313, -176.61502916214059, 12.507343278686905,
+      -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7,
+    ];
+    if (z < 0.5)
+      return (
+        Math.log(Math.PI / Math.sin(Math.PI * z)) - logGamma(1 - z)
+      );
+    const zz = z - 1;
+    let s = coef[0];
+    for (let i = 1; i < g + 2; i++) s += coef[i] / (zz + i);
+    const t = zz + g + 0.5;
+    return 0.5 * Math.log(2 * Math.PI) + (zz + 0.5) * Math.log(t) - t + Math.log(s);
+  }
+  // Regularized lower incomplete gamma via series expansion
+  let sum = 0;
+  let term = 1 / a;
+  sum = term;
+  for (let n = 1; n < 200; n++) {
+    term *= x / (a + n);
+    sum += term;
+    if (Math.abs(term) < 1e-12 * Math.abs(sum)) break;
+  }
+  const lowerP = Math.exp(a * Math.log(x) - x - logGamma(a)) * sum;
+  return Math.max(0, Math.min(1, 1 - lowerP));
+}
+
 export const FUNNEL_STAGES = [
   { key: 'IS_LEAD', label: 'Lead' },
   { key: 'IS_PII', label: 'PII Submitted' },
@@ -179,9 +220,9 @@ export function computeDetailStats(rows: Record<string, unknown>[]) {
     const expected = total / groupNames.length;
     const chiSq = groupNames.reduce((s, name) => {
       const obs = groupRows.get(name)?.length || 0;
-      return s + Math.pow(obs - expected, 2) / expected;
+      return s + Math.pow(obs - expected, 2) / Math.max(expected, 1);
     }, 0);
-    const pValue = 1 - normalCdf(Math.sqrt(chiSq));
+    const pValue = chiSquaredPValue(chiSq, groupNames.length - 1);
     srm = {
       passed: pValue > 0.01,
       pValue,
@@ -281,7 +322,7 @@ export function computeAggregatedStats(
       const exp = Math.max(expectedTotals[i], 1);
       return s + Math.pow(obs - exp, 2) / exp;
     }, 0);
-    const pValue = 1 - normalCdf(Math.sqrt(chiSq));
+    const pValue = chiSquaredPValue(chiSq, groupNames.length - 1);
     const controlIdx = groupNames.indexOf(controlName);
     const expectedControlRatio =
       expectedTotals[controlIdx] / Math.max(grandTotal, 1);
