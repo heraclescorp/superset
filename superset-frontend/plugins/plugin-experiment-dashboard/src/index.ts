@@ -18,10 +18,3 @@
  */
 // eslint-disable-next-line import/prefer-default-export
 export { default as ExperimentDashboardPlugin } from './plugin';
-/**
- * Note: this file exports the default export from AvenABChart.tsx.
- * If you want to export multiple visualization modules, you will need to
- * either add additional plugin folders (similar in structure to ./plugin)
- * OR export multiple instances of `ChartPlugin` extensions in ./plugin/index.ts
- * which in turn load exports from AvenABChart.tsx
- */

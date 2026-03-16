@@ -1,5 +1,5 @@
 /**
- * Root component for the Aven Experiment Dashboard plugin.
+ * Root component for the Experiment Dashboard plugin.
  *
  * Routes between the list view (when dataset contains STATUS columns) and the
  * detail view (when dataset contains metric/exposure data). The default export

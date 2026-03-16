@@ -41,7 +41,7 @@ export default class ExperimentDashboardPlugin extends ChartPlugin {
     super({
       buildQuery,
       controlPanel,
-      loadChart: () => import('../AvenABChart'),
+      loadChart: () => import('../ExperimentDashboard'),
       metadata,
       transformProps,
     });
