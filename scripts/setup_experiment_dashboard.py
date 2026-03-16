@@ -51,15 +51,14 @@ from superset.app import create_app
 
 app = create_app()
 
-# Cutoff date: only show experiments starting after the ABTestOverride data fix.
-# Adjust this date if needed.
-EXPOSURE_CUTOFF = "2026-03-03"  # Date after override logging fix (PR #66683) was deployed
+# Cutoff date: only include exposure analytics events logged after the ABTestOverride
+# logging fix (PR #66683). Events before this date may have bogus override data.
+EXPOSURE_CUTOFF = "2026-03-03"  # Day after override logging fix was deployed
 
 EXPOSURES_SQL = f"""\
 WITH exp_spec AS (
   SELECT id AS experiment_spec_id, start_time, end_time
   FROM postgres_rds_wal_public.experiment_spec
-  WHERE start_time >= '{EXPOSURE_CUTOFF}'::DATE
 )
 SELECT
   e.EXPERIMENT_SPEC_ID,
@@ -89,6 +88,7 @@ JOIN exp_spec USING (experiment_spec_id)
 LEFT JOIN etl_auto_gen_tables.dim_loan_app_event dlae ON e.LOAN_APPLICATION_ID = dlae.LOAN_APPLICATION_ID
 LEFT JOIN etl_auto_gen_tables.dim_loan_app dla ON e.LOAN_APPLICATION_ID = dla.LOAN_APPLICATION_ID
 LEFT JOIN etl_auto_gen_tables.fact_underwriting fu ON e.LOAN_APPLICATION_ID = fu.LOAN_APPLICATION_ID AND fu.IS_SELECTED_POLICY = TRUE
+WHERE e.CREATED_AT >= '{EXPOSURE_CUTOFF}'::DATE
 """
 
 EXPERIMENT_LIST_SQL = f"""\
@@ -111,6 +111,7 @@ FROM FIVETRAN_DATABASE.POSTGRES_RDS_WAL_PUBLIC.EXPERIMENT_SPEC es
 INNER JOIN (
   SELECT EXPERIMENT_SPEC_ID, COUNT(*) AS EXPOSED_CNT
   FROM FIVETRAN_DATABASE.ETL_AUTO_GEN_TABLES.DIM_LOAN_APP_AB_EXPERIMENT_EXPOSURES_V2
+  WHERE CREATED_AT >= '{EXPOSURE_CUTOFF}'::DATE
   GROUP BY 1
 ) ex ON es.ID = ex.EXPERIMENT_SPEC_ID
 LEFT JOIN (
@@ -118,7 +119,6 @@ LEFT JOIN (
   FROM FIVETRAN_DATABASE.ETL_AUTO_GEN_TABLES.EXPERIMENT_CHARTS_V2
 ) ec ON es.ID = ec.EXPERIMENT_SPEC_ID
 WHERE es.START_TIME IS NOT NULL
-  AND es.START_TIME >= '{EXPOSURE_CUTOFF}'::DATE
   AND es.START_TIME <= CURRENT_TIMESTAMP()
 ORDER BY es.START_TIME DESC
 """
@@ -452,7 +452,6 @@ def main():
                 SELECT ID, NAME, TYPE, GROUPS, END_TIME
                 FROM FIVETRAN_DATABASE.POSTGRES_RDS_WAL_PUBLIC.EXPERIMENT_SPEC
                 WHERE START_TIME IS NOT NULL
-                  AND START_TIME >= '{EXPOSURE_CUTOFF}'::DATE
                   AND START_TIME <= CURRENT_TIMESTAMP()
                 ORDER BY START_TIME DESC
             """
@@ -554,11 +553,13 @@ def main():
             chart_url_expr = "NULL"
 
         # Precompute exposed counts from Snowflake (already connected)
+        # Only count exposures after the override logging fix date
         exposed_counts = {}
         try:
             ec_df = sf_db.get_df(f"""
                 SELECT EXPERIMENT_SPEC_ID, COUNT(*) AS CNT
                 FROM FIVETRAN_DATABASE.ETL_AUTO_GEN_TABLES.DIM_LOAN_APP_AB_EXPERIMENT_EXPOSURES_V2
+                WHERE CREATED_AT >= '{EXPOSURE_CUTOFF}'::DATE
                 GROUP BY 1
             """)
             for _, row in ec_df.iterrows():
@@ -596,7 +597,6 @@ SELECT
   {chart_url_expr} AS CHART_URL
 FROM FIVETRAN_DATABASE.POSTGRES_RDS_WAL_PUBLIC.EXPERIMENT_SPEC es
 WHERE es.START_TIME IS NOT NULL
-  AND es.START_TIME >= '{EXPOSURE_CUTOFF}'::DATE
   AND es.START_TIME <= CURRENT_TIMESTAMP()
   AND es.ID IN ({",".join(exposed_counts.keys())})
 ORDER BY es.START_TIME DESC
@@ -623,10 +623,10 @@ FROM FIVETRAN_DATABASE.POSTGRES_RDS_WAL_PUBLIC.EXPERIMENT_SPEC es
 INNER JOIN (
   SELECT EXPERIMENT_SPEC_ID, COUNT(*) AS EXPOSED_CNT
   FROM FIVETRAN_DATABASE.ETL_AUTO_GEN_TABLES.DIM_LOAN_APP_AB_EXPERIMENT_EXPOSURES_V2
+  WHERE CREATED_AT >= '{EXPOSURE_CUTOFF}'::DATE
   GROUP BY 1
 ) ex ON es.ID = ex.EXPERIMENT_SPEC_ID
 WHERE es.START_TIME IS NOT NULL
-  AND es.START_TIME >= '{EXPOSURE_CUTOFF}'::DATE
   AND es.START_TIME <= CURRENT_TIMESTAMP()
 ORDER BY es.START_TIME DESC
 """
