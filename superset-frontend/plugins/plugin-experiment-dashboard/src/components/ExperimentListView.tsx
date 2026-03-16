@@ -5,7 +5,8 @@
  * exposure counts, and navigation to the detail view for comparable experiments.
  */
 
-import React, { useMemo, useState } from 'react';
+/* eslint-disable theme-colors/no-literal-colors */
+import { type CSSProperties, useMemo, useState } from 'react';
 import { ListExperiment } from '../types';
 import { fmtNum, timeAgo, parseListRow } from '../utils';
 import Shell from './Shell';
@@ -71,7 +72,7 @@ export default function ExperimentListView({
   const sortArrow = (key: SortKey) =>
     sortKey === key ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '';
 
-  const thBase: React.CSSProperties = {
+  const thBase: CSSProperties = {
     padding: '8px 12px',
     fontSize: 11,
     fontWeight: 600,
@@ -82,8 +83,8 @@ export default function ExperimentListView({
     cursor: 'pointer',
     userSelect: 'none',
   };
-  const thActive: React.CSSProperties = { ...thBase, color: '#374151' };
-  const tdStyle: React.CSSProperties = {
+  const thActive: CSSProperties = { ...thBase, color: '#374151' };
+  const tdStyle: CSSProperties = {
     padding: '10px 12px',
     borderBottom: '1px solid #f3f4f6',
     fontSize: 13,
@@ -92,12 +93,23 @@ export default function ExperimentListView({
 
   return (
     <Shell height={height}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20 }}>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10,
+          marginBottom: 20,
+        }}
+      >
         <span style={{ fontSize: 22 }}>🧪</span>
         <div>
-          <h1 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>Experiments</h1>
+          <h1 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>
+            Experiments
+          </h1>
           <p style={{ margin: 0, fontSize: 12, color: '#9ca3af' }}>
-            {experiments.length} experiments · {experiments.filter(e => e.chartUrl).length} with charts · Click to view details
+            {experiments.length} experiments ·{' '}
+            {experiments.filter(e => e.chartUrl).length} with charts · Click to
+            view details
           </p>
         </div>
       </div>
@@ -121,11 +133,31 @@ export default function ExperimentListView({
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>
           <tr>
-            <th style={sortKey === 'name' ? thActive : thBase} onClick={() => handleSort('name')}>Experiment{sortArrow('name')}</th>
-            <th style={sortKey === 'status' ? thActive : thBase} onClick={() => handleSort('status')}>Status{sortArrow('status')}</th>
-            <th style={sortKey === 'exposedCount' ? thActive : thBase} onClick={() => handleSort('exposedCount')}>Exposed{sortArrow('exposedCount')}</th>
+            <th
+              style={sortKey === 'name' ? thActive : thBase}
+              onClick={() => handleSort('name')}
+            >
+              Experiment{sortArrow('name')}
+            </th>
+            <th
+              style={sortKey === 'status' ? thActive : thBase}
+              onClick={() => handleSort('status')}
+            >
+              Status{sortArrow('status')}
+            </th>
+            <th
+              style={sortKey === 'exposedCount' ? thActive : thBase}
+              onClick={() => handleSort('exposedCount')}
+            >
+              Exposed{sortArrow('exposedCount')}
+            </th>
             <th style={thBase}>Groups</th>
-            <th style={sortKey === 'startTime' ? thActive : thBase} onClick={() => handleSort('startTime')}>Started{sortArrow('startTime')}</th>
+            <th
+              style={sortKey === 'startTime' ? thActive : thBase}
+              onClick={() => handleSort('startTime')}
+            >
+              Started{sortArrow('startTime')}
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -137,11 +169,22 @@ export default function ExperimentListView({
                 cursor: exp.chartUrl ? 'pointer' : 'default',
                 opacity: exp.chartUrl ? 1 : 0.55,
               }}
-              onMouseEnter={e => { if (exp.chartUrl) e.currentTarget.style.background = '#f9fafb'; }}
-              onMouseLeave={e => (e.currentTarget.style.background = '')}
+              onMouseEnter={e => {
+                if (exp.chartUrl) e.currentTarget.style.background = '#f9fafb';
+              }}
+              onMouseLeave={e => {
+                e.currentTarget.style.background = '';
+              }}
             >
               <td style={tdStyle}>
-                <div style={{ fontWeight: 500, color: exp.chartUrl ? '#6366f1' : '#9ca3af' }}>{exp.name}</div>
+                <div
+                  style={{
+                    fontWeight: 500,
+                    color: exp.chartUrl ? '#6366f1' : '#9ca3af',
+                  }}
+                >
+                  {exp.name}
+                </div>
                 <div style={{ fontSize: 11, color: '#9ca3af' }}>
                   {exp.type.replace(/_/g, ' ')} · ID: {exp.id}
                 </div>
@@ -157,14 +200,14 @@ export default function ExperimentListView({
                       exp.status === 'running'
                         ? '#dbeafe'
                         : exp.status === 'completed'
-                        ? '#dcfce7'
-                        : '#f3f4f6',
+                          ? '#dcfce7'
+                          : '#f3f4f6',
                     color:
                       exp.status === 'running'
                         ? '#1d4ed8'
                         : exp.status === 'completed'
-                        ? '#15803d'
-                        : '#374151',
+                          ? '#15803d'
+                          : '#374151',
                   }}
                 >
                   {exp.status}
@@ -176,11 +219,16 @@ export default function ExperimentListView({
               <td style={{ ...tdStyle, fontSize: 12 }}>
                 {exp.isComparable ? (
                   <span style={{ color: '#374151' }}>
-                    {Object.entries(exp.groups).map(([name, buckets]) => {
-                      const pct = Array.isArray(buckets) ? buckets.length * 10 : '?';
-                      return `${name}: ${pct}%`;
-                    }).join(' / ')}
-                    {exp.totalBuckets < 10 && ` / control: ${(10 - exp.totalBuckets) * 10}%`}
+                    {Object.entries(exp.groups)
+                      .map(([name, buckets]) => {
+                        const pct = Array.isArray(buckets)
+                          ? buckets.length * 10
+                          : '?';
+                        return `${name}: ${pct}%`;
+                      })
+                      .join(' / ')}
+                    {exp.totalBuckets < 10 &&
+                      ` / control: ${(10 - exp.totalBuckets) * 10}%`}
                   </span>
                 ) : (
                   <span style={{ color: '#9ca3af' }}>

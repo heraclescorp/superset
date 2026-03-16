@@ -22,7 +22,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import React, { useMemo } from 'react';
+import { useMemo } from 'react';
 import { ExperimentDashboardProps } from './types';
 import { isListData } from './utils';
 import ExperimentListView from './components/ExperimentListView';
@@ -51,4 +51,3 @@ export default function AvenExperimentDash({
     />
   );
 }
-

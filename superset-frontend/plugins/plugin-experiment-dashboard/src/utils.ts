@@ -24,13 +24,13 @@ export function timeAgo(val: unknown): string {
   } else {
     const s = String(val);
     d = new Date(s);
-    if (isNaN(d.getTime())) {
+    if (Number.isNaN(d.getTime())) {
       const num = Number(s);
-      d = !isNaN(num) ? new Date(num) : d;
+      d = !Number.isNaN(num) ? new Date(num) : d;
     }
   }
 
-  if (isNaN(d.getTime())) return String(val).slice(0, 10);
+  if (Number.isNaN(d.getTime())) return String(val).slice(0, 10);
 
   const diff = Date.now() - d.getTime();
   const days = Math.floor(diff / 86400000);
@@ -64,17 +64,22 @@ export function parseListRow(row: Record<string, unknown>): ListExperiment {
   try {
     const raw = get(row, 'GROUPS');
     if (typeof raw === 'string') groups = JSON.parse(raw);
-    else if (raw && typeof raw === 'object') groups = raw as Record<string, unknown>;
-  } catch { /* ignore */ }
+    else if (raw && typeof raw === 'object')
+      groups = raw as Record<string, unknown>;
+  } catch {
+    /* ignore */
+  }
 
   const groupCount = Object.keys(groups).length;
   // Total hash buckets used (each bucket = 10%)
-  const totalBuckets = Object.values(groups).reduce<number>((sum, buckets) => {
-    return sum + (Array.isArray(buckets) ? buckets.length : 0);
-  }, 0);
+  const totalBuckets = Object.values(groups).reduce<number>(
+    (sum, buckets) => sum + (Array.isArray(buckets) ? buckets.length : 0),
+    0,
+  );
   // Comparable if 2+ explicit groups, OR if explicit groups don't cover all 10 buckets
   // (remaining buckets become IMPLICIT_CONTROL in the exposures table)
-  const isComparable = groupCount >= 2 || (groupCount === 1 && totalBuckets < 10);
+  const isComparable =
+    groupCount >= 2 || (groupCount === 1 && totalBuckets < 10);
 
   return {
     id: String(get(row, 'ID')),

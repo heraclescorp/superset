@@ -26,8 +26,9 @@ import { buildQueryContext, QueryFormData } from '@superset-ui/core';
  */
 export default function buildQuery(formData: QueryFormData) {
   const extraFilters: any[] = [];
-  const experimentId = formData.url_params?.experiment_id
-    || (typeof window !== 'undefined'
+  const experimentId =
+    formData.url_params?.experiment_id ||
+    (typeof window !== 'undefined'
       ? new URLSearchParams(window.location.search).get('experiment_id')
       : null);
 
@@ -39,9 +40,11 @@ export default function buildQuery(formData: QueryFormData) {
     });
   }
 
-  return buildQueryContext(formData, baseQueryObject => [{
-    ...baseQueryObject,
-    filters: [...(baseQueryObject.filters || []), ...extraFilters],
-    is_timeseries: false,
-  }]);
+  return buildQueryContext(formData, baseQueryObject => [
+    {
+      ...baseQueryObject,
+      filters: [...(baseQueryObject.filters || []), ...extraFilters],
+      is_timeseries: false,
+    },
+  ]);
 }
