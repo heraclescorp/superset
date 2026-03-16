@@ -59,15 +59,24 @@ describe('computeDetailStats', () => {
 
 describe('computeAggregatedStats', () => {
   const metricLabels = [
-    'UNQ_LEAD_NUM', 'UNQ_PII_NUM', 'UNQ_PQ_NUM',
-    'UNQ_PQA_NUM', 'UNQ_OFFER_NUM', 'UNQ_ACCEPT_NUM',
-    'UNQ_SCHED_NUM', 'UNQ_NOTARY_NUM', 'UNQ_BOOKED_NUM',
+    'UNQ_LEAD_NUM',
+    'UNQ_PII_NUM',
+    'UNQ_PQ_NUM',
+    'UNQ_PQA_NUM',
+    'UNQ_OFFER_NUM',
+    'UNQ_ACCEPT_NUM',
+    'UNQ_SCHED_NUM',
+    'UNQ_NOTARY_NUM',
+    'UNQ_BOOKED_NUM',
   ];
   const groupby = ['EXPERIMENT_GROUP'];
 
   it('computes stats from aggregated metric rows', () => {
     const result = computeAggregatedStats(
-      aggregatedRows, metricLabels, groupby, 'showButton:8',
+      aggregatedRows,
+      metricLabels,
+      groupby,
+      'showButton:8',
     );
 
     expect(result.groupNames).toEqual(['IMPLICIT_CONTROL', 'showButton']);
@@ -77,7 +86,10 @@ describe('computeAggregatedStats', () => {
 
   it('produces variant metrics for each metric label', () => {
     const result = computeAggregatedStats(
-      aggregatedRows, metricLabels, groupby, 'showButton:8',
+      aggregatedRows,
+      metricLabels,
+      groupby,
+      'showButton:8',
     );
 
     expect(result.variantMetrics).toHaveLength(1);
@@ -97,7 +109,10 @@ describe('computeAggregatedStats', () => {
 
   it('computes SRM with alloc parameter', () => {
     const result = computeAggregatedStats(
-      aggregatedRows, metricLabels, groupby, 'showButton:8',
+      aggregatedRows,
+      metricLabels,
+      groupby,
+      'showButton:8',
     );
 
     expect(result.srm).not.toBeNull();

@@ -94,20 +94,20 @@ export function chiSquaredPValue(chiSq: number, df: number): number {
       -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7,
     ];
     if (z < 0.5)
-      return (
-        Math.log(Math.PI / Math.sin(Math.PI * z)) - logGamma(1 - z)
-      );
+      return Math.log(Math.PI / Math.sin(Math.PI * z)) - logGamma(1 - z);
     const zz = z - 1;
     let s = coef[0];
-    for (let i = 1; i < g + 2; i++) s += coef[i] / (zz + i);
+    for (let i = 1; i < g + 2; i += 1) s += coef[i] / (zz + i);
     const t = zz + g + 0.5;
-    return 0.5 * Math.log(2 * Math.PI) + (zz + 0.5) * Math.log(t) - t + Math.log(s);
+    return (
+      0.5 * Math.log(2 * Math.PI) + (zz + 0.5) * Math.log(t) - t + Math.log(s)
+    );
   }
   // Regularized lower incomplete gamma via series expansion
   let sum = 0;
   let term = 1 / a;
   sum = term;
-  for (let n = 1; n < 200; n++) {
+  for (let n = 1; n < 200; n += 1) {
     term *= x / (a + n);
     sum += term;
     if (Math.abs(term) < 1e-12 * Math.abs(sum)) break;

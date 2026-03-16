@@ -1,4 +1,13 @@
-import { isListData, parseListRow, get, fmtNum, fmt, fmtP, dirColor, timeAgo } from '../src/utils';
+import {
+  isListData,
+  parseListRow,
+  get,
+  fmtNum,
+  fmt,
+  fmtP,
+  dirColor,
+  timeAgo,
+} from '../src/utils';
 import { listRows, detailRowsSmall } from './testData';
 
 describe('utils', () => {

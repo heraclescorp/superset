@@ -1,6 +1,10 @@
 import { ChartProps } from '@superset-ui/core';
 import transformProps from '../../src/plugin/transformProps';
-import { listChartProps, detailChartProps, aggregatedChartProps } from '../testData';
+import {
+  listChartProps,
+  detailChartProps,
+  aggregatedChartProps,
+} from '../testData';
 
 describe('ExperimentDashboard transformProps', () => {
   it('transforms list-view chart props', () => {
@@ -27,9 +31,15 @@ describe('ExperimentDashboard transformProps', () => {
     const result = transformProps(chartProps);
 
     expect(result.metricLabels).toEqual([
-      'UNQ_LEAD_NUM', 'UNQ_PII_NUM', 'UNQ_PQ_NUM',
-      'UNQ_PQA_NUM', 'UNQ_OFFER_NUM', 'UNQ_ACCEPT_NUM',
-      'UNQ_SCHED_NUM', 'UNQ_NOTARY_NUM', 'UNQ_BOOKED_NUM',
+      'UNQ_LEAD_NUM',
+      'UNQ_PII_NUM',
+      'UNQ_PQ_NUM',
+      'UNQ_PQA_NUM',
+      'UNQ_OFFER_NUM',
+      'UNQ_ACCEPT_NUM',
+      'UNQ_SCHED_NUM',
+      'UNQ_NOTARY_NUM',
+      'UNQ_BOOKED_NUM',
     ]);
     expect(result.groupbyColumns).toEqual(['EXPERIMENT_GROUP']);
   });
