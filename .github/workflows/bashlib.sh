@@ -112,27 +112,11 @@ testdata() {
   pip install -e .
   superset db upgrade
   superset load_test_users
-  # Stagger start + retry with backoff — multiple CI jobs downloading example
-  # data from GitHub simultaneously triggers HTTP 429 rate limiting.
-  # Random initial delay (0-60s) spreads jobs across the rate limit window.
-  local jitter=$((RANDOM % 60))
-  say "Waiting ${jitter}s before loading examples (stagger to avoid rate limits)..."
-  sleep $jitter
-  local max_attempts=5
-  local attempt=1
-  while [ $attempt -le $max_attempts ]; do
-    if superset load_examples --load-test-data; then
-      break
-    fi
-    if [ $attempt -eq $max_attempts ]; then
-      say "load_examples failed after $max_attempts attempts"
-      exit 1
-    fi
-    local wait=$((attempt * 60 + RANDOM % 30))
-    say "load_examples attempt $attempt failed, retrying in ${wait}s..."
-    sleep $wait
-    attempt=$((attempt + 1))
-  done
+  # Use --only-metadata to create table schemas without downloading data
+  # from GitHub (avoids HTTP 429 rate limiting when multiple CI jobs run
+  # in parallel). Test data tables will have schemas but no rows from
+  # external sources — energy test data is loaded separately.
+  superset load_examples --only-metadata --load-test-data
   superset init
   say "::endgroup::"
 }

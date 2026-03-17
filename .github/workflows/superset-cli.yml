@@ -63,17 +63,7 @@ jobs:
       - name: superset load_examples
         if: steps.check.outputs.python
         run: |
-          # load examples without test data (retry with backoff for GitHub rate limits)
-          sleep $((RANDOM % 60))
-          for attempt in 1 2 3 4 5; do
-            if superset load_examples --load-big-data; then
-              break
-            fi
-            if [ "$attempt" -eq 5 ]; then
-              echo "load_examples failed after 5 attempts"
-              exit 1
-            fi
-            wait=$((attempt * 60 + RANDOM % 30))
-            echo "load_examples attempt $attempt failed, retrying in ${wait}s..."
-            sleep $wait
-          done
+          # Use --only-metadata to skip external downloads from GitHub
+          # (avoids HTTP 429 rate limiting when multiple CI jobs run in parallel).
+          # --load-big-data generates synthetic test data locally.
+          superset load_examples --only-metadata --load-big-data
