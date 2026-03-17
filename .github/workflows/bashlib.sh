@@ -112,7 +112,22 @@ testdata() {
   pip install -e .
   superset db upgrade
   superset load_test_users
-  superset load_examples --load-test-data
+  # Retry load_examples with backoff — multiple CI jobs downloading example data
+  # from GitHub simultaneously often triggers HTTP 429 rate limiting.
+  local max_attempts=3
+  local attempt=1
+  while [ $attempt -le $max_attempts ]; do
+    if superset load_examples --load-test-data; then
+      break
+    fi
+    if [ $attempt -eq $max_attempts ]; then
+      say "load_examples failed after $max_attempts attempts"
+      exit 1
+    fi
+    say "load_examples attempt $attempt failed, retrying in $((attempt * 30))s..."
+    sleep $((attempt * 30))
+    attempt=$((attempt + 1))
+  done
   superset init
   say "::endgroup::"
 }

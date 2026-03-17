@@ -63,5 +63,15 @@ jobs:
       - name: superset load_examples
         if: steps.check.outputs.python
         run: |
-          # load examples without test data
-          superset load_examples --load-big-data
+          # load examples without test data (retry with backoff for GitHub rate limits)
+          for attempt in 1 2 3; do
+            if superset load_examples --load-big-data; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "load_examples failed after 3 attempts"
+              exit 1
+            fi
+            echo "load_examples attempt $attempt failed, retrying in $((attempt * 30))s..."
+            sleep $((attempt * 30))
+          done
