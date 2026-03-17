@@ -112,11 +112,16 @@ testdata() {
   pip install -e .
   superset db upgrade
   superset load_test_users
-  # Use --only-metadata to create table schemas without downloading data
-  # from GitHub (avoids HTTP 429 rate limiting when multiple CI jobs run
-  # in parallel). Test data tables will have schemas but no rows from
-  # external sources — energy test data is loaded separately.
-  superset load_examples --only-metadata --load-test-data
+  # Pre-download example data with curl retry to avoid HTTP 429 when
+  # multiple CI jobs fetch from raw.githubusercontent.com in parallel.
+  mkdir -p /tmp/examples-data
+  local base="https://github.com/apache-superset/examples-data/blob/master"
+  for f in countries.json.gz birth_names2.json.gz energy.json.gz; do
+    curl -sSL --retry 10 --retry-delay 15 --retry-all-errors \
+      -o "/tmp/examples-data/$f" "$base/$f?raw=true"
+  done
+  export SUPERSET_EXAMPLES_BASE_URL="file:///tmp/examples-data/"
+  superset load_examples --load-test-data
   superset init
   say "::endgroup::"
 }

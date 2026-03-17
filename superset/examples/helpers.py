@@ -22,7 +22,10 @@ from superset.connectors.sqla.models import SqlaTable
 from superset.models.slice import Slice
 from superset.utils import json
 
-BASE_URL = "https://github.com/apache-superset/examples-data/blob/master/"
+BASE_URL = os.environ.get(
+    "SUPERSET_EXAMPLES_BASE_URL",
+    "https://github.com/apache-superset/examples-data/blob/master/",
+)
 
 misc_dash_slices: set[str] = set()  # slices assembled in a 'Misc Chart' dashboard
 
@@ -69,4 +72,6 @@ def get_slice_json(defaults: dict[Any, Any], **kwargs: Any) -> str:
 
 
 def get_example_url(filepath: str) -> str:
+    if BASE_URL.startswith("file://"):
+        return f"{BASE_URL}{filepath}"
     return f"{BASE_URL}{filepath}?raw=true"

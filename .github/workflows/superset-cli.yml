@@ -62,8 +62,19 @@ jobs:
           superset load_test_users
       - name: superset load_examples
         if: steps.check.outputs.python
+        env:
+          SUPERSET_EXAMPLES_BASE_URL: "file:///tmp/examples-data/"
         run: |
-          # Use --only-metadata to skip external downloads from GitHub
-          # (avoids HTTP 429 rate limiting when multiple CI jobs run in parallel).
-          # --load-big-data generates synthetic test data locally.
-          superset load_examples --only-metadata --load-big-data
+          # Pre-download example data with curl retry to avoid HTTP 429 when
+          # multiple CI jobs fetch from raw.githubusercontent.com in parallel.
+          mkdir -p /tmp/examples-data
+          BASE="https://github.com/apache-superset/examples-data/blob/master"
+          for f in countries.json.gz birth_names2.json.gz random_time_series.json.gz \
+                   san_francisco.csv.gz flight_data.csv.gz airports.csv.gz \
+                   sf_population.json.gz paris_iris.json.gz \
+                   multiformat_time_series.json.gz bart-lines.json.gz \
+                   birth_france_data_for_country_map.csv; do
+            curl -sSL --retry 10 --retry-delay 15 --retry-all-errors \
+              -o "/tmp/examples-data/$f" "$BASE/$f?raw=true"
+          done
+          superset load_examples --load-big-data
