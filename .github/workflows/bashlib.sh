@@ -112,9 +112,13 @@ testdata() {
   pip install -e .
   superset db upgrade
   superset load_test_users
-  # Retry load_examples with backoff — multiple CI jobs downloading example data
-  # from GitHub simultaneously often triggers HTTP 429 rate limiting.
-  local max_attempts=3
+  # Stagger start + retry with backoff — multiple CI jobs downloading example
+  # data from GitHub simultaneously triggers HTTP 429 rate limiting.
+  # Random initial delay (0-60s) spreads jobs across the rate limit window.
+  local jitter=$((RANDOM % 60))
+  say "Waiting ${jitter}s before loading examples (stagger to avoid rate limits)..."
+  sleep $jitter
+  local max_attempts=5
   local attempt=1
   while [ $attempt -le $max_attempts ]; do
     if superset load_examples --load-test-data; then
@@ -124,8 +128,9 @@ testdata() {
       say "load_examples failed after $max_attempts attempts"
       exit 1
     fi
-    say "load_examples attempt $attempt failed, retrying in $((attempt * 30))s..."
-    sleep $((attempt * 30))
+    local wait=$((attempt * 60 + RANDOM % 30))
+    say "load_examples attempt $attempt failed, retrying in ${wait}s..."
+    sleep $wait
     attempt=$((attempt + 1))
   done
   superset init
