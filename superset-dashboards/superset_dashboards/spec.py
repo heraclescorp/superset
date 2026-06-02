@@ -16,13 +16,14 @@
 # under the License.
 from __future__ import annotations
 
-import json
 import re
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from superset_dashboards import json_utils as json
 
 
 class SpecError(ValueError):
@@ -101,8 +102,7 @@ def substitute_chart_placeholders(value: Any, chart_ids_by_name: dict[str, int])
     """Replace chart ID placeholders in imported layout templates."""
 
     replacements = {
-        f"__CHART_ID:{name}__": chart_id
-        for name, chart_id in chart_ids_by_name.items()
+        f"__CHART_ID:{name}__": chart_id for name, chart_id in chart_ids_by_name.items()
     }
     if chart_ids_by_name:
         replacements["__CHART_ID__"] = next(iter(chart_ids_by_name.values()))
@@ -121,7 +121,7 @@ def title_from_dashboard_spec(dashboard: dict[str, Any]) -> str:
 def stable_suffix(value: str) -> str:
     """Create a stable, position_json-safe suffix from a user-facing label."""
 
-    suffix = re.sub(r"[^A-Za-z0-9_-]+", "-", value.strip()).strip("-")
+    suffix = re.sub(r"[^A-Za-z0-9]+", "-", value.strip()).strip("-")
     return suffix or "item"
 
 

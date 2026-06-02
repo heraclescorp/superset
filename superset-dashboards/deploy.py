@@ -17,6 +17,5 @@
 # under the License.
 from superset_dashboards.cli import main
 
-
 if __name__ == "__main__":
     main()

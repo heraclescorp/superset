@@ -16,17 +16,16 @@
 # under the License.
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
 import yaml
-
-from superset_dashboards.layout import ChartLayout, build_dashboard_position
+from superset_dashboards import json_utils as json
+from superset_dashboards.layout import build_dashboard_position, ChartLayout
 from superset_dashboards.spec import (
-    SpecError,
     ensure_json_string,
     load_spec,
+    SpecError,
     substitute_dataset_placeholders,
 )
 

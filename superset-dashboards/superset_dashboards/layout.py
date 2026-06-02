@@ -39,7 +39,12 @@ def build_dashboard_position(charts: list[ChartLayout]) -> dict[str, Any]:
     position: dict[str, Any] = {
         "DASHBOARD_VERSION_KEY": "v2",
         "ROOT_ID": {"type": "ROOT", "id": "ROOT_ID", "children": ["GRID_ID"]},
-        "GRID_ID": {"type": "GRID", "id": "GRID_ID", "parents": ["ROOT_ID"], "children": []},
+        "GRID_ID": {
+            "type": "GRID",
+            "id": "GRID_ID",
+            "parents": ["ROOT_ID"],
+            "children": [],
+        },
     }
 
     row_ids: list[str] = []

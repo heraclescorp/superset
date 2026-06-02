@@ -16,12 +16,11 @@
 # under the License.
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Literal
 
 import pytest
-
+from superset_dashboards import json_utils as json
 from superset_dashboards.deployer import DashboardDeployer
 
 

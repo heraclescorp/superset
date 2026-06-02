@@ -177,7 +177,9 @@ class SupersetApiClient:
             ],
             "page_size": 2,
         }
-        payload = self.get_json(f"/api/v1/{resource}/", params={"q": prison.dumps(query)})
+        payload = self.get_json(
+            f"/api/v1/{resource}/", params={"q": prison.dumps(query)}
+        )
         result = payload.get("result", {})
         if isinstance(result, dict):
             data = result.get("data", [])

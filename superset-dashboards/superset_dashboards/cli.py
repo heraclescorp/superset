@@ -70,7 +70,9 @@ from superset_dashboards.spec import load_spec
     show_default=True,
     help="HTTP timeout in seconds.",
 )
-@click.option("--dry-run", is_flag=True, help="Plan the deploy without mutating Superset.")
+@click.option(
+    "--dry-run", is_flag=True, help="Plan the deploy without mutating Superset."
+)
 @click.option(
     "--skip-upsert",
     is_flag=True,

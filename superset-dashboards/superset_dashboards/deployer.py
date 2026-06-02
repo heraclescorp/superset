@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
-from superset_dashboards.layout import ChartLayout, build_dashboard_position
+from superset_dashboards.layout import build_dashboard_position, ChartLayout
 from superset_dashboards.spec import (
     ensure_json_string,
     pick_fields,
@@ -48,7 +48,9 @@ class SupersetClientProtocol(Protocol):
     def put_json(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
         """PUT JSON to Superset."""
 
-    def get_json(self, endpoint: str, *, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    def get_json(
+        self, endpoint: str, *, params: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         """GET JSON from Superset."""
 
     def export_dashboard(self, dashboard_id: int, output_path: Path) -> Path:
@@ -163,9 +165,15 @@ class DashboardDeployer:
         try:
             database_id = self._upsert_database(spec["database"])
             dataset_id = self._upsert_dataset(spec["dataset"], database_id)
-            dashboard_id = self._upsert_dashboard_shell(spec["dashboard"], existing_dashboard)
-            chart_layouts = self._upsert_charts(spec["charts"], dataset_id, dashboard_id)
-            self._update_dashboard_position(spec["dashboard"], dashboard_id, chart_layouts)
+            dashboard_id = self._upsert_dashboard_shell(
+                spec["dashboard"], existing_dashboard
+            )
+            chart_layouts = self._upsert_charts(
+                spec["charts"], dataset_id, dashboard_id
+            )
+            self._update_dashboard_position(
+                spec["dashboard"], dashboard_id, chart_layouts
+            )
 
             if self.run_smoke_tests:
                 self._run_smoke_tests()
@@ -191,10 +199,14 @@ class DashboardDeployer:
             return
 
         timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        slug = existing_dashboard.get("slug") or existing_dashboard.get("dashboard_title")
+        slug = existing_dashboard.get("slug") or existing_dashboard.get(
+            "dashboard_title"
+        )
         safe_name = stable_suffix(str(slug or dashboard_id))
         output_path = self.snapshot_dir / f"{safe_name}-{timestamp}.zip"
-        self.result.snapshot_path = self.client.export_dashboard(dashboard_id, output_path)
+        self.result.snapshot_path = self.client.export_dashboard(
+            dashboard_id, output_path
+        )
         self._record(f"Exported pre-deploy dashboard snapshot to {output_path}")
 
     def _upsert_database(self, database: dict[str, Any]) -> int:
@@ -207,7 +219,9 @@ class DashboardDeployer:
         )
         if existing:
             database_id = int(existing["id"])
-            self._record(f"Updating database {database['database_name']} ({database_id})")
+            self._record(
+                f"Updating database {database['database_name']} ({database_id})"
+            )
             if not self.dry_run:
                 self.client.put_json(f"/api/v1/database/{database_id}", payload)
             self.result.database_id = database_id
@@ -241,7 +255,9 @@ class DashboardDeployer:
             "/api/v1/dataset/get_or_create/",
             {key: value for key, value in lookup_payload.items() if value is not None},
         )
-        dataset_id = int(response.get("result", {}).get("table_id") or self._extract_id(response))
+        dataset_id = int(
+            response.get("result", {}).get("table_id") or self._extract_id(response)
+        )
         self.client.put_json(f"/api/v1/dataset/{dataset_id}", payload)
         self.result.dataset_id = dataset_id
         return dataset_id
@@ -255,7 +271,9 @@ class DashboardDeployer:
         payload.setdefault("position_json", "{}")
         if existing_dashboard:
             dashboard_id = int(existing_dashboard["id"])
-            self._record(f"Updating dashboard shell {title_from_dashboard_spec(dashboard)}")
+            self._record(
+                f"Updating dashboard shell {title_from_dashboard_spec(dashboard)}"
+            )
             if not self.dry_run:
                 self.client.put_json(f"/api/v1/dashboard/{dashboard_id}", payload)
             self.result.dashboard_id = dashboard_id
@@ -304,7 +322,9 @@ class DashboardDeployer:
                     response = self.client.post_json("/api/v1/chart/", payload)
                     result = response.get("result", {})
                     chart_id = self._extract_id(response)
-                    chart_uuid = result.get("uuid") if isinstance(result, dict) else None
+                    chart_uuid = (
+                        result.get("uuid") if isinstance(result, dict) else None
+                    )
 
             self.result.chart_ids[chart["slice_name"]] = chart_id
             chart_layouts.append(
@@ -324,7 +344,9 @@ class DashboardDeployer:
         dashboard_id: int,
         chart_layouts: list[ChartLayout],
     ) -> None:
-        chart_ids_by_name = {chart.slice_name: chart.chart_id for chart in chart_layouts}
+        chart_ids_by_name = {
+            chart.slice_name: chart.chart_id for chart in chart_layouts
+        }
         supplied_position = dashboard.get("position_json", dashboard.get("position"))
         position = supplied_position or build_dashboard_position(chart_layouts)
         position = substitute_chart_placeholders(position, chart_ids_by_name)
@@ -353,7 +375,9 @@ class DashboardDeployer:
         spec: dict[str, Any],
         existing_dashboard: dict[str, Any] | None,
     ) -> None:
-        database = self._find_by_uuid_or_name("database", spec["database"], "database_name")
+        database = self._find_by_uuid_or_name(
+            "database", spec["database"], "database_name"
+        )
         dataset = self._find_by_uuid_or_name("dataset", spec["dataset"], "table_name")
         if existing_dashboard:
             self.result.dashboard_id = int(existing_dashboard["id"])
