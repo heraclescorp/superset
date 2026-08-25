@@ -23,6 +23,11 @@ from superset.tags.models import Tag, TaggedObject
 from superset.tasks.thumbnails import cache_chart_thumbnail
 
 MONITORING_TAG = "dash_monitoring"
+# Must match the user the anomaly-detection ETL authenticates as
+# (aven_python/jobs/jobs/etl/flows/supersetDashboardAnomalyDetectionFlow.py).
+# Thumbnail cache keys are user-specific when THUMBNAIL_EXECUTORS resolves to
+# CURRENT_USER, so rendering as any other user warms a key the ETL never reads.
+MONITORING_USER = "eng@aven.com"
 
 
 @celery_app.task(name="warm_monitoring_thumbnails")
@@ -38,9 +43,9 @@ def warm_monitoring_thumbnails() -> dict[str, int]:
             TaggedObject.tag_id == tag.id,
         )
     ]
-
     for chart_id in chart_ids:
-        # current_user None -> executor falls back to the configured Selenium user
-        cache_chart_thumbnail.delay(current_user=None, chart_id=chart_id, force=True)
+        cache_chart_thumbnail.delay(
+            current_user=MONITORING_USER, chart_id=chart_id, force=True
+        )
 
     return {"scheduled": len(chart_ids)}
