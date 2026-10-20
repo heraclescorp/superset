@@ -488,21 +488,37 @@ class EmailNotification(BaseNotification):  # pylint: disable=too-few-public-met
         return self.now.strftime(name)
 
     def _get_call_to_action(self) -> str:
-        recipients = getaddresses([self._get_to().replace(";", ",")])
+        call_to_action = __(current_app.config["EMAIL_REPORTS_CTA"])
+        recipient_targets = (
+            self._get_to() or "",
+            self._get_cc() or "",
+            self._get_bcc() or "",
+        )
+        if not any(target.strip() for target in recipient_targets):
+            return call_to_action
+
+        recipients = [
+            address
+            for target in recipient_targets
+            if target.strip()
+            for _, address in getaddresses([target.replace(";", ",")])
+        ]
         if not recipients or any(
             not address
             or "@" not in address
             or address.rsplit("@", 1)[1].casefold() != INTERNAL_EMAIL_DOMAIN
-            for _, address in recipients
+            for address in recipients
         ):
             return ""
-        return __(current_app.config["EMAIL_REPORTS_CTA"])
+        return call_to_action
 
     def _render_call_to_action_tag(self) -> str:
         """Anchor markup for the call-to-action link, or "" when disabled."""
         if not self._content.include_cta:
             return ""
         call_to_action = self._get_call_to_action()
+        if not call_to_action:
+            return ""
         return f'<b><a href="{self._content.url}">{call_to_action}</a></b><p></p>'
 
     def _render_call_to_action_paragraph(self) -> str:
@@ -510,6 +526,8 @@ class EmailNotification(BaseNotification):  # pylint: disable=too-few-public-met
         if not self._content.include_cta:
             return ""
         call_to_action = self._get_call_to_action()
+        if not call_to_action:
+            return ""
         return f'<p><b><a href="{self._content.url}">{call_to_action}</a></b></p>'
 
     def _get_to(self) -> str:
@@ -530,6 +548,12 @@ class EmailNotification(BaseNotification):  # pylint: disable=too-few-public-met
         to = self._get_to()
         cc = self._get_cc()
         bcc = self._get_bcc()
+        from_address = self._content.email_from
+        logger.info(
+            "Sending report email from %s (default would be %s)",
+            from_address,
+            current_app.config["SMTP_MAIL_FROM"],
+        )
 
         try:
             send_email_smtp(
@@ -546,6 +570,7 @@ class EmailNotification(BaseNotification):  # pylint: disable=too-few-public-met
                 cc=cc,
                 bcc=bcc,
                 header_data=content.header_data,
+                from_address=from_address,
             )
             logger.info(
                 "Report sent to email, task_id: %s, notification content is %s",

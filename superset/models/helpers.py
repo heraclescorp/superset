@@ -2175,6 +2175,9 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
             is_virtual=bool(self.sql),
         )
         sql = self._apply_cte(sql, sqlaq.cte)
+        chart_id = query_obj.get("chart_id")
+        if chart_id is not None:
+            sql = f"-- SUPERSET CHART {chart_id} \n" + sql
 
         if mutate:
             sql = self.database.mutate_sql_based_on_config(sql)

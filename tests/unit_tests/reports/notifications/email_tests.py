@@ -143,16 +143,24 @@ def test_cta_link_included_by_default() -> None:
 
 
 @pytest.mark.parametrize(
-    ("target", "should_include_cta"),
+    ("recipient_config_json", "should_include_cta"),
     [
-        ("reports@AVEN.com", True),
-        ("reports@aven.com, external@example.com", False),
-        ("reports@notaven.com", False),
-        ("reports@aven.com.attacker.test", False),
+        ('{"target": "reports@AVEN.com"}', True),
+        ('{"target": "reports@aven.com, external@example.com"}', False),
+        ('{"target": "reports@notaven.com"}', False),
+        ('{"target": "reports@aven.com.attacker.test"}', False),
+        (
+            '{"target": "reports@aven.com", "ccTarget": "external@example.com"}',
+            False,
+        ),
+        (
+            '{"target": "reports@aven.com", "bccTarget": "external@example.com"}',
+            False,
+        ),
     ],
 )
 def test_cta_link_is_visible_only_to_aven_recipients(
-    target: str, should_include_cta: bool
+    recipient_config_json: str, should_include_cta: bool
 ) -> None:
     from superset.reports.models import ReportRecipients, ReportRecipientType
     from superset.reports.notifications.base import NotificationContent
@@ -177,7 +185,7 @@ def test_cta_link_is_visible_only_to_aven_recipients(
         EmailNotification(
             recipient=ReportRecipients(
                 type=ReportRecipientType.EMAIL,
-                recipient_config_json=f'{{"target": "{target}"}}',
+                recipient_config_json=recipient_config_json,
             ),
             content=content,
         )
@@ -189,6 +197,7 @@ def test_cta_link_is_visible_only_to_aven_recipients(
     assert (
         "http://example.com/superset/dashboard/1/" in email_body
     ) is should_include_cta
+
 
 def test_cta_link_omitted_when_include_cta_is_false() -> None:
     # `superset.models.helpers`, a dependency of following imports,

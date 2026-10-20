@@ -42,6 +42,7 @@ class NotificationContent:
     include_cta: bool = True  # include the call-to-action link back to Superset
     csv_filename: Optional[str] = None  # custom CSV filename
     email_subject: Optional[str] = None  # custom email subject
+    email_from: Optional[str] = None  # custom sender email address
 
     @property
     def has_attachments(self) -> bool:

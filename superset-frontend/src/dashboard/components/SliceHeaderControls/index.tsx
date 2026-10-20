@@ -16,17 +16,11 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import {
-  MouseEvent,
-  Key,
-  KeyboardEvent,
-  useState,
-  useRef,
-  useEffect,
-  RefObject,
-} from 'react';
+import { useState, useRef, useEffect } from 'react';
+import type { MouseEvent, Key, KeyboardEvent, RefObject } from 'react';
 
-import { RouteComponentProps, useHistory } from 'react-router-dom';
+import { useHistory } from 'react-router-dom';
+import type { RouteComponentProps } from 'react-router-dom';
 import { extendedDayjs } from '@superset-ui/core/utils/dates';
 import { t } from '@apache-superset/core/translation';
 import {
@@ -36,6 +30,8 @@ import {
   getChartMetadataRegistry,
   getExtensionsRegistry,
   VizType,
+} from '@superset-ui/core';
+import type {
   BinaryQueryObjectFilterClause,
   JsonObject,
   QueryFormData,
@@ -43,7 +39,8 @@ import {
 import { logging } from '@apache-superset/core/utils';
 import { css, useTheme, styled } from '@apache-superset/core/theme';
 import { useSelector } from 'react-redux';
-import { Menu, MenuItem } from '@superset-ui/core/components/Menu';
+import { Menu } from '@superset-ui/core/components/Menu';
+import type { MenuItem } from '@superset-ui/core/components/Menu';
 import {
   NoAnimationDropdown,
   Tooltip,
@@ -63,7 +60,8 @@ import {
   LOG_ACTIONS_CHART_DOWNLOAD_AS_PNG,
   LOG_ACTIONS_CHART_DOWNLOAD_AS_PDF,
 } from 'src/logger/LogUtils';
-import { MenuKeys, RootState } from 'src/dashboard/types';
+import { MenuKeys } from 'src/dashboard/types';
+import type { RootState } from 'src/dashboard/types';
 import DrillDetailModal from 'src/components/Chart/DrillDetail/DrillDetailModal';
 import { openInNewTab } from 'src/utils/navigationUtils';
 import { usePermissions } from 'src/hooks/usePermissions';
@@ -318,6 +316,14 @@ const SliceHeaderControls = (
       case MenuKeys.ExportXlsx:
         // eslint-disable-next-line no-unused-expressions
         props.exportXLSX?.(props.slice.slice_id);
+        break;
+      case MenuKeys.ExportGoogleSheets:
+        window
+          .open(
+            `/export/chart/${props.slice.slice_id}/google-sheets/`,
+            '_blank',
+          )
+          ?.focus();
         break;
       case MenuKeys.DownloadAsImage: {
         // Hide the dropdown menu so it is not captured in the screenshot
@@ -696,6 +702,17 @@ const SliceHeaderControls = (
           label: t('Export to Excel'),
           icon: <Icons.FileOutlined css={dropdownIconsStyles} />,
         },
+        ...(isFeatureEnabled(FeatureFlag.GoogleSheetsExport) &&
+        (props.slice.viz_type === 'table' ||
+          props.slice.viz_type === 'pivot_table_v2')
+          ? [
+              {
+                key: MenuKeys.ExportGoogleSheets,
+                label: t('Export to Google Sheets'),
+                icon: <Icons.FileOutlined css={dropdownIconsStyles} />,
+              },
+            ]
+          : []),
         ...(isFeatureEnabled(FeatureFlag.AllowFullCsvExport) &&
         props.supersetCanDownload &&
         isTable

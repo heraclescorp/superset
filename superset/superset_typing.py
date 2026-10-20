@@ -191,6 +191,7 @@ class QueryObjectDict(TypedDict, total=False):
         group_others_when_limit_reached: Whether to group remaining items as "Others"
         to_dttm: End datetime for time range
         time_shift: Time shift specification
+        chart_id: Chart primary key used to annotate generated SQL
 
     Additional fields used throughout the codebase:
         time_range: Human-readable time range string
@@ -228,6 +229,7 @@ class QueryObjectDict(TypedDict, total=False):
     grouping_sets: list[list[str]]
     to_dttm: datetime | None
     time_shift: str | None
+    chart_id: int | None
     time_compare_full_range: bool
     post_processing: list[dict[str, Any]]
 

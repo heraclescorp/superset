@@ -16,7 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { SyntheticEvent } from 'react';
+import type { SyntheticEvent } from 'react';
 import { useSelector } from 'react-redux';
 import { logging } from '@apache-superset/core/utils';
 import { t } from '@apache-superset/core/translation';
@@ -26,11 +26,12 @@ import {
   isFeatureEnabled,
   SupersetClient,
 } from '@superset-ui/core';
-import { MenuItem } from '@superset-ui/core/components/Menu';
+import type { MenuItem } from '@superset-ui/core/components/Menu';
 import { parse as parseContentDisposition } from 'content-disposition';
 import { useDownloadScreenshot } from 'src/dashboard/hooks/useDownloadScreenshot';
 import { NATIVE_FILTER_PREFIX } from 'src/dashboard/components/nativeFilters/FiltersConfigModal/utils';
-import { MenuKeys, RootState } from 'src/dashboard/types';
+import { MenuKeys } from 'src/dashboard/types';
+import type { RootState } from 'src/dashboard/types';
 import downloadAsPdf from 'src/utils/downloadAsPdf';
 import downloadAsImage from 'src/utils/downloadAsImage';
 import handleResourceExport from 'src/utils/export';
@@ -265,6 +266,22 @@ export const useDownloadMenuItems = (
                 },
               ]
             : []),
+        ]
+      : []),
+    ...(userCanExport && isFeatureEnabled(FeatureFlag.GoogleSheetsExport)
+      ? [
+          {
+            key: 'export-google-sheets',
+            label: t('Export to Google Sheets'),
+            onClick: () => {
+              window
+                .open(
+                  `/export/dashboard/${dashboardId}/google-sheets/`,
+                  '_blank',
+                )
+                ?.focus();
+            },
+          },
         ]
       : []),
     {

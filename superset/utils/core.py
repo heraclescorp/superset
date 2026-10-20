@@ -912,13 +912,14 @@ def send_email_smtp(  # pylint: disable=invalid-name,too-many-arguments,too-many
     bcc: str | None = None,
     mime_subtype: str = "mixed",
     header_data: HeaderDataType | None = None,
+    from_address: str | None = None,
 ) -> None:
     """
     Send an email with html content, eg:
     send_email_smtp(
         'test@example.com', 'foo', '<b>Foo</b> bar',['/dev/null'], dryrun=True)
     """
-    smtp_mail_from = config["SMTP_MAIL_FROM"]
+    smtp_mail_from = from_address or config["SMTP_MAIL_FROM"]
     smtp_mail_to = recipients_string_to_list(to)
 
     msg = MIMEMultipart(mime_subtype)

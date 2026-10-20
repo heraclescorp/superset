@@ -2088,6 +2088,41 @@ def test_send_email_smtp_strips_crlf_from_subject() -> None:
     assert subject == "Hello Bcc: attacker@example.com"
 
 
+def test_send_email_smtp_uses_custom_from_address() -> None:
+    from email.mime.multipart import MIMEMultipart
+
+    from superset.utils.core import send_email_smtp
+
+    captured: dict[str, MIMEMultipart] = {}
+
+    def capture_mutator(msg: MIMEMultipart, **kwargs: Any) -> MIMEMultipart:
+        captured["msg"] = msg
+        return msg
+
+    config = {
+        "SMTP_MAIL_FROM": "default@example.com",
+        "EMAIL_HEADER_MUTATOR": capture_mutator,
+        "SMTP_HOST": "localhost",
+        "SMTP_PORT": 25,
+        "SMTP_USER": "",
+        "SMTP_PASSWORD": "",
+        "SMTP_STARTTLS": False,
+        "SMTP_SSL": False,
+        "SMTP_SSL_SERVER_AUTH": False,
+    }
+
+    send_email_smtp(
+        to="recipient@example.com",
+        subject="Daily report",
+        html_content="<b>body</b>",
+        config=config,
+        dryrun=True,
+        from_address="reports@aven.com",
+    )
+
+    assert captured["msg"]["From"] == "reports@aven.com"
+
+
 @pytest.mark.parametrize(
     "token",
     [

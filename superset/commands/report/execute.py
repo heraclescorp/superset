@@ -1276,6 +1276,11 @@ class BaseReportState:
         }
         return log_data
 
+    def _get_email_from(self) -> str | None:
+        extra = self._report_schedule.extra
+        return extra.get("email_from") if extra else None
+
+
     def _get_notification_content(self) -> NotificationContent:  # noqa: C901
         """
         Gets a notification content, this is composed by a title and a screenshot
@@ -1329,6 +1334,7 @@ class BaseReportState:
                     url=url,
                     slack_retry_deadline=self._get_slack_retry_deadline(),
                     include_cta=include_cta,
+                    email_from=self._get_email_from(),
                 )
 
         if (
@@ -1365,6 +1371,7 @@ class BaseReportState:
             include_cta=include_cta,
             csv_filename=self._report_schedule.csv_filename,
             email_subject=self._report_schedule.email_subject,
+            email_from=self._get_email_from(),
         )
 
     def _send_notification(
@@ -1524,6 +1531,7 @@ class BaseReportState:
             url=url,
             # NULL (rows predating the include_cta column) is treated as True
             include_cta=self._report_schedule.include_cta is not False,
+            email_from=self._get_email_from(),
         )
 
         # filter recipients to recipients who are also editors
@@ -1661,6 +1669,7 @@ class BaseReportState:
             url=url,
             retry_attempt=attempt,
             retry_max_attempts=max_attempts,
+            email_from=self._get_email_from(),
         )
         self._send(notification_content, recipients)
 
@@ -1678,6 +1687,7 @@ class BaseReportState:
             header_data=header_data,
             url=url,
             retry_max_attempts=max_attempts,
+            email_from=self._get_email_from(),
         )
         self._send(notification_content, self._report_schedule.recipients)
 

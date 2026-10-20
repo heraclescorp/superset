@@ -110,6 +110,7 @@ export type ExtraNativeFilter = {
 
 export type Extra = {
   dashboard?: DashboardState;
+  email_from?: string;
 };
 
 export type Operator = '<' | '>' | '<=' | '>=' | '==' | '!=' | 'not null';

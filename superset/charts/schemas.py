@@ -1741,6 +1741,10 @@ class ChartDataQueryContextSchema(Schema):
         data.pop("async_mode", None)
         data.pop("tab_id", None)
         query_context = self.get_query_context_factory().create(**data)
+        slice_id = getattr(getattr(query_context, "slice_", None), "id", None)
+        if slice_id is not None:
+            for query in query_context.queries:
+                query.chart_id = slice_id
         return query_context
 
     def get_query_context_factory(self) -> QueryContextFactory:

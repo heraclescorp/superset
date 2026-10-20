@@ -16,15 +16,8 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import {
-  ChangeEvent,
-  FunctionComponent,
-  useState,
-  useEffect,
-  useMemo,
-  useCallback,
-  ReactNode,
-} from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
+import type { ChangeEvent, FunctionComponent, ReactNode } from 'react';
 
 import { t } from '@apache-superset/core/translation';
 import {
@@ -34,12 +27,8 @@ import {
   VizType,
   getExtensionsRegistry,
 } from '@superset-ui/core';
-import {
-  css,
-  styled,
-  SupersetTheme,
-  useTheme,
-} from '@apache-superset/core/theme';
+import { css, styled, useTheme } from '@apache-superset/core/theme';
+import type { SupersetTheme } from '@apache-superset/core/theme';
 import rison from 'rison';
 import { useSingleViewResource } from 'src/views/CRUD/hooks';
 import withToasts from 'src/components/MessageToasts/withToasts';
@@ -47,8 +36,8 @@ import SubjectPicker, {
   mapSubjectPickerValuesToIds,
   mapSubjectsToPickerValues,
   normalizeSubjectToPickerValue,
-  type SubjectPickerValue,
 } from 'src/features/subjects/SubjectPicker';
+import type { SubjectPickerValue } from 'src/features/subjects/SubjectPicker';
 import type Subject from 'src/types/Subject';
 import { SubjectType } from 'src/types/Subject';
 // import { Form as AntdForm } from 'src/components/Form';
@@ -68,8 +57,8 @@ import {
   Tooltip,
   TreeSelect,
   Button,
-  type CheckboxChangeEvent,
 } from '@superset-ui/core/components';
+import type { CheckboxChangeEvent } from '@superset-ui/core/components';
 
 import { navigateTo } from 'src/utils/navigationUtils';
 
@@ -79,6 +68,10 @@ import TextAreaControl from 'src/explore/components/controls/TextAreaControl';
 import { useCommonConf } from 'src/features/databases/state';
 import {
   NotificationMethodOption,
+  Sections,
+  ContentType,
+} from 'src/features/alerts/types';
+import type {
   NotificationSetting,
   AlertObject,
   ChartObject,
@@ -90,17 +83,15 @@ import {
   Recipient,
   AlertsReportsConfig,
   ValidationObject,
-  Sections,
   TabNode,
   SelectValue,
-  ContentType,
   ExtraNativeFilter,
   NativeFilterObject,
   DashboardTabsResponse,
 } from 'src/features/alerts/types';
 import { StatusMessage } from 'src/filters/components/common';
 import { useSelector } from 'react-redux';
-import { UserWithPermissionsAndRoles } from 'src/types/bootstrapTypes';
+import type { UserWithPermissionsAndRoles } from 'src/types/bootstrapTypes';
 import getBootstrapData from 'src/utils/getBootstrapData';
 import { getChartDataRequest } from 'src/components/Chart/chartAction';
 import DateFilterControl from 'src/explore/components/controls/DateFilterControl';
@@ -481,6 +472,7 @@ export const TRANSLATIONS = {
   WORKING_TIMEOUT_ERROR_TEXT: t('working timeout'),
   RECIPIENTS_ERROR_TEXT: t('recipients'),
   EMAIL_SUBJECT_ERROR_TEXT: t('email subject'),
+  EMAIL_FROM_ERROR_TEXT: t('email from (must be aven.com)'),
   EMAIL_VALIDATION_ERROR_TEXT: t('invalid email'),
   ERROR_TOOLTIP_MESSAGE: t(
     'Not all required fields are complete. Please provide the following:',
@@ -649,6 +641,7 @@ const AlertReportModal: FunctionComponent<AlertReportModalProps> = ({
   >([]);
   const [emailSubject, setEmailSubject] = useState<string>('');
   const [emailError, setEmailError] = useState(false);
+  const [emailFromError, setEmailFromError] = useState(false);
   const [csvFilename, setCsvFilename] = useState<string>('');
   const [csvFilenameError, setCsvFilenameError] = useState(false);
 
@@ -985,7 +978,10 @@ const AlertReportModal: FunctionComponent<AlertReportModalProps> = ({
       editors: mapSubjectPickerValuesToIds(currentAlert?.editors || []),
       recipients,
       report_format: reportFormat || DEFAULT_NOTIFICATION_FORMAT,
-      extra: contentType === ContentType.Dashboard ? currentAlert?.extra : {},
+      extra: {
+        ...(contentType === ContentType.Dashboard ? currentAlert?.extra : {}),
+        email_from: currentAlert?.extra?.email_from || null,
+      },
       csv_filename: currentAlert?.csv_filename || '',
     };
 
@@ -1327,6 +1323,17 @@ const AlertReportModal: FunctionComponent<AlertReportModalProps> = ({
       target: { type, value, name },
     } = event;
     const parsedValue = type === 'number' ? parseInt(value, 10) || null : value;
+
+    if (name === 'email_from') {
+      setCurrentAlert(currentAlertData => ({
+        ...currentAlertData,
+        extra: {
+          ...currentAlertData?.extra,
+          email_from: value || undefined,
+        },
+      }));
+      return;
+    }
 
     updateAlertState(name, parsedValue);
 
@@ -1872,6 +1879,9 @@ const AlertReportModal: FunctionComponent<AlertReportModalProps> = ({
     if (emailError) {
       errors.push(TRANSLATIONS.EMAIL_SUBJECT_ERROR_TEXT);
     }
+    if (emailFromError) {
+      errors.push(TRANSLATIONS.EMAIL_FROM_ERROR_TEXT);
+    }
 
     if (csvFilenameError) {
       errors.push('csv filename');
@@ -2067,6 +2077,7 @@ const AlertReportModal: FunctionComponent<AlertReportModalProps> = ({
     notificationSettings,
     conditionNotNull,
     emailError,
+    emailFromError,
     csvFilenameError,
   ]);
   useEffect(() => {
@@ -2126,6 +2137,10 @@ const AlertReportModal: FunctionComponent<AlertReportModalProps> = ({
 
   const handleCsvFilenameErrorUpdate = (hasError: boolean) => {
     setCsvFilenameError(hasError);
+  };
+
+  const handleEmailFromErrorUpdate = (hasError: boolean) => {
+    setEmailFromError(hasError);
   };
 
   return (
@@ -2794,6 +2809,8 @@ const AlertReportModal: FunctionComponent<AlertReportModalProps> = ({
                         email_subject={currentAlert?.email_subject || ''}
                         defaultSubject={emailSubject || ''}
                         setErrorSubject={handleErrorUpdate}
+                        email_from={currentAlert?.extra?.email_from || ''}
+                        setErrorEmailFrom={handleEmailFromErrorUpdate}
                         csv_filename={currentAlert?.csv_filename || ''}
                         defaultCsvFilename={csvFilename || ''}
                         setErrorCsvFilename={handleCsvFilenameErrorUpdate}

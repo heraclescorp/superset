@@ -16,25 +16,27 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import React, {
-  ReactElement,
-  useCallback,
-  useDeferredValue,
-  useMemo,
-  useState,
+import { useCallback, useDeferredValue, useMemo, useState } from 'react';
+import type {
   Dispatch,
+  KeyboardEvent,
+  MouseEvent,
+  ReactElement,
+  ReactNode,
   SetStateAction,
 } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import {
   isFeatureEnabled,
   FeatureFlag,
-  VizType,
+  getChartMetadataRegistry,
+} from '@superset-ui/core';
+import type {
+  Behavior,
   JsonObject,
   LatestQueryFormData,
   QueryFormData,
-  Behavior,
-  getChartMetadataRegistry,
+  VizType,
 } from '@superset-ui/core';
 import { css, styled, useTheme } from '@apache-superset/core/theme';
 import { t } from '@apache-superset/core/translation';
@@ -44,7 +46,8 @@ import {
   Button,
   Input,
 } from '@superset-ui/core/components';
-import { Menu, MenuProps } from '@superset-ui/core/components/Menu';
+import { Menu } from '@superset-ui/core/components/Menu';
+import type { MenuProps } from '@superset-ui/core/components/Menu';
 import { useToasts } from 'src/components/MessageToasts/withToasts';
 import { exportChart, getChartKey } from 'src/explore/exploreUtils';
 import downloadAsImage from 'src/utils/downloadAsImage';
@@ -55,7 +58,7 @@ import { useHeaderReportMenuItems } from 'src/features/reports/ReportModal/Heade
 import { MenuItemTooltip } from 'src/components/Chart/DisabledMenuItemTooltip';
 import { logEvent } from 'src/logger/actions';
 import { openVersionHistoryPanel } from 'src/features/versionHistory/reducer';
-import { UserWithPermissionsAndRoles } from 'src/types/bootstrapTypes';
+import type { UserWithPermissionsAndRoles } from 'src/types/bootstrapTypes';
 import { canOverwriteSlice } from 'src/explore/exploreUtils/canOverwriteSlice';
 import {
   LOG_ACTIONS_CHART_DOWNLOAD_AS_IMAGE,
@@ -67,10 +70,10 @@ import {
   LOG_ACTIONS_CHART_DOWNLOAD_AS_XLS,
 } from 'src/logger/LogUtils';
 import exportPivotExcel from 'src/utils/downloadAsPivotExcel';
-import { StreamingProgress } from 'src/components/StreamingExportModal';
-import { Slice } from 'src/types/Chart';
-import { ChartState, ExplorePageInitialData } from 'src/explore/types';
-import { ReportObject } from 'src/features/reports/types';
+import type { StreamingProgress } from 'src/components/StreamingExportModal';
+import type { Slice } from 'src/types/Chart';
+import type { ChartState, ExplorePageInitialData } from 'src/explore/types';
+import type { ReportObject } from 'src/features/reports/types';
 import ViewQueryModal from '../controls/ViewQueryModal';
 import EmbedCodeContent from '../EmbedCodeContent';
 import { useDashboardsMenuItems } from './DashboardsSubMenu';
@@ -192,7 +195,7 @@ export function getExportScreenshotMenuItems({
           key: transparentKey,
           label: t('Transparent background'),
           onClick: (e: {
-            domEvent: React.MouseEvent | React.KeyboardEvent;
+            domEvent: MouseEvent | KeyboardEvent;
           }) => {
             downloadAsImage(chartSelector, sliceName, true, theme, {
               format: 'png',
@@ -212,7 +215,7 @@ export function getExportScreenshotMenuItems({
           key: solidKey,
           label: t('Solid background'),
           onClick: (e: {
-            domEvent: React.MouseEvent | React.KeyboardEvent;
+            domEvent: MouseEvent | KeyboardEvent;
           }) => {
             downloadAsImage(chartSelector, sliceName, true, theme, {
               format: 'png',
@@ -234,7 +237,7 @@ export function getExportScreenshotMenuItems({
       key: pdfKey,
       label: t('Export as PDF'),
       icon: <Icons.FileOutlined />,
-      onClick: (e: { domEvent: React.MouseEvent | React.KeyboardEvent }) => {
+      onClick: (e: { domEvent: MouseEvent | KeyboardEvent }) => {
         downloadAsPdf(chartSelector, sliceName, true)(e.domEvent);
         setIsDropdownVisible(false);
         dispatch(
@@ -822,7 +825,7 @@ export const useExploreAdditionalActionsMenu = (
         label: imageExportLabel(t('Export screenshot (jpeg)')),
         icon: <Icons.FileImageOutlined />,
         disabled: imageExportDisabled,
-        onClick: (e: { domEvent: React.MouseEvent | React.KeyboardEvent }) => {
+        onClick: (e: { domEvent: MouseEvent | KeyboardEvent }) => {
           downloadAsImage(
             CHART_EXPORT_SELECTOR,
             slice?.slice_name ?? t('New chart'),
@@ -867,6 +870,29 @@ export const useExploreAdditionalActionsMenu = (
         },
       },
     );
+    if (
+      isFeatureEnabled(FeatureFlag.GoogleSheetsExport) &&
+      slice?.slice_id &&
+      (latestQueryFormData.viz_type === 'table' ||
+        latestQueryFormData.viz_type === 'pivot_table_v2')
+    ) {
+      const chartId = slice.slice_id;
+      allDataChildren.push({
+        key: 'google-sheets-export',
+        label: t('Export to Google Sheets'),
+        icon: <Icons.FileOutlined />,
+        disabled: !canDownloadCSV,
+        onClick: () => {
+          window
+            .open(
+              `/export/chart/${chartId}/google-sheets/`,
+              '_blank',
+            )
+            ?.focus();
+          setIsDropdownVisible(false);
+        },
+      });
+    }
 
     const currentViewChildren = [
       {
@@ -943,7 +969,7 @@ export const useExploreAdditionalActionsMenu = (
         label: imageExportLabel(t('Export screenshot (jpeg)')),
         icon: <Icons.FileImageOutlined />,
         disabled: imageExportDisabled,
-        onClick: (e: { domEvent: React.MouseEvent | React.KeyboardEvent }) => {
+        onClick: (e: { domEvent: MouseEvent | KeyboardEvent }) => {
           downloadAsImage(
             CHART_EXPORT_SELECTOR,
             slice?.slice_name ?? t('New chart'),
@@ -1031,7 +1057,7 @@ export const useExploreAdditionalActionsMenu = (
     // Share submenu
     const shareChildren: Array<{
       key: string;
-      label: React.ReactNode;
+      label: ReactNode;
       onClick: () => void;
     }> = [
       {
@@ -1134,10 +1160,10 @@ export const useExploreAdditionalActionsMenu = (
       menuItems.push({
         key: MENU_KEYS.RUN_IN_SQL_LAB,
         label: t('Run in SQL Lab'),
-        onClick: (e: { domEvent?: React.MouseEvent | React.KeyboardEvent }) => {
+        onClick: (e: { domEvent?: MouseEvent | KeyboardEvent }) => {
           onOpenInEditor(
             latestQueryFormData,
-            !!(e.domEvent as React.MouseEvent | undefined)?.metaKey,
+            !!(e.domEvent as MouseEvent | undefined)?.metaKey,
           );
           setIsDropdownVisible(false);
         },

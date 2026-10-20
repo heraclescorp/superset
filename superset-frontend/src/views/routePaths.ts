@@ -57,4 +57,6 @@ export const RoutePaths = {
   USERS: '/users/',
   GROUPS: '/list_groups/',
   EXTENSIONS: '/extensions/list/',
+  EXPORT_GOOGLE_SHEETS: '/export/dashboard/:dashboardId/google-sheets/',
+  EXPORT_SLICE_TO_GOOGLE_SHEETS: '/export/chart/:sliceId/google-sheets/',
 } as const;

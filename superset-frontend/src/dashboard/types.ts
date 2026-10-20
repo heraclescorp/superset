@@ -385,6 +385,7 @@ export enum MenuKeys {
   ExportPivotCsv = 'export_pivot_csv',
   ExportFullCsv = 'export_full_csv',
   ExportXlsx = 'export_xlsx',
+  ExportGoogleSheets = 'export_google_sheets',
   ExportFullXlsx = 'export_full_xlsx',
   ForceRefresh = 'force_refresh',
   Fullscreen = 'fullscreen',

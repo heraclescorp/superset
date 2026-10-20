@@ -89,6 +89,14 @@ class DatasourceDAO(BaseDAO[Datasource]):
             )
             raise DatasourceNotFound()
 
+        if isinstance(datasource, (SqlaTable, Query, SavedQuery)) and datasource.sql:
+            datasource_name = getattr(datasource, "table_name", "UNKNOWN") or "UNKNOWN"
+            if "-- SUPERSET QUERY" not in datasource.sql:
+                datasource.sql = (
+                    f"-- SUPERSET QUERY datasource type: {datasource_type} "
+                    f"id: {datasource.id} name: {datasource_name} \n{datasource.sql}"
+                )
+
         return datasource
 
     @staticmethod

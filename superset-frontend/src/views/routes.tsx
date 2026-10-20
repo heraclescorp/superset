@@ -18,12 +18,8 @@
  */
 
 import { FeatureFlag, isFeatureEnabled } from '@superset-ui/core';
-import {
-  lazy,
-  ComponentType,
-  ComponentProps,
-  LazyExoticComponent,
-} from 'react';
+import { lazy } from 'react';
+import type { ComponentType, ComponentProps, LazyExoticComponent } from 'react';
 import { isUserAdmin } from 'src/dashboard/util/permissionUtils';
 import getBootstrapData from 'src/utils/getBootstrapData';
 import { stripAppRoot } from 'src/utils/navigationUtils';
@@ -108,6 +104,13 @@ const ExecutionLogList = lazy(
 
 const Chart = lazy(
   () => import(/* webpackChunkName: "Chart" */ 'src/pages/Chart'),
+);
+const ExportGoogleSheets = lazy(
+  () => import('src/pages/ExportGoogleSheets'),
+);
+
+const ExportSliceToGoogleSheets = lazy(
+  () => import('src/pages/ExportSliceToGoogleSheets'),
 );
 
 const QueryHistoryList = lazy(
@@ -273,6 +276,19 @@ if (isFeatureEnabled(FeatureFlag.SoftDelete)) {
     Component: ArchivedList,
   });
 }
+if (isFeatureEnabled(FeatureFlag.GoogleSheetsExport)) {
+  routes.push(
+    {
+      path: RoutePaths.EXPORT_GOOGLE_SHEETS,
+      Component: ExportGoogleSheets,
+    },
+    {
+      path: RoutePaths.EXPORT_SLICE_TO_GOOGLE_SHEETS,
+      Component: ExportSliceToGoogleSheets,
+    },
+  );
+}
+
 
 const user = getBootstrapData()?.user;
 const authRegistrationEnabled =

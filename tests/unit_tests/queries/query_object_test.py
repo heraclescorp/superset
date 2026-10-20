@@ -86,6 +86,7 @@ def test_default_query_object_to_dict():
         "series_limit": 0,
         "series_limit_metric": None,
         "time_shift": None,
+        "chart_id": None,
         "time_compare_full_range": False,
         "to_dttm": None,
     }

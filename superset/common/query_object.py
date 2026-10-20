@@ -119,6 +119,7 @@ class QueryObject:  # pylint: disable=too-many-instance-attributes
     time_shift: str | None
     time_range: str | None
     to_dttm: datetime | None
+    chart_id: int | None
 
     def __init__(  # pylint: disable=too-many-locals, too-many-arguments
         self,
@@ -173,6 +174,7 @@ class QueryObject:  # pylint: disable=too-many-instance-attributes
         self.time_shift = time_shift
         self.from_dttm = kwargs.get("from_dttm")
         self.to_dttm = kwargs.get("to_dttm")
+        self.chart_id = kwargs.get("chart_id")
         self.result_type = kwargs.get("result_type")
         # Per-query forced-refresh idempotency nonce (the async task's UUID). Set
         # on the async read-back so a re-issued force reads the warmed result the
@@ -554,6 +556,7 @@ class QueryObject:  # pylint: disable=too-many-instance-attributes
             "grouping_sets": self.grouping_sets,
             "to_dttm": self.to_dttm,
             "time_shift": self.time_shift,
+            "chart_id": self.chart_id,
             "time_compare_full_range": self.time_compare_full_range,
         }
         return query_object_dict
