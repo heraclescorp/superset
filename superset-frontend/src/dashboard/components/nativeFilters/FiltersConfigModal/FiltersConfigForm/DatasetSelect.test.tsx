@@ -24,7 +24,8 @@ import {
   within,
 } from 'spec/helpers/testing-library';
 import fetchMock from 'fetch-mock';
-import DatasetSelect from './DatasetSelect';
+import DatasetSelect, { loadDatasetOptions } from './DatasetSelect';
+import { supersetGetCache } from 'src/utils/cachedSupersetGet';
 
 const DATASETS = [
   {
@@ -56,7 +57,7 @@ const DATASETS = [
 const mockOnChange = jest.fn();
 
 afterEach(() => {
-  fetchMock.restore();
+  fetchMock.clearHistory().removeRoutes();
   jest.clearAllMocks();
 });
 
@@ -75,7 +76,7 @@ const typeIntoSelect = async (text: string) => {
 const findOption = (text: string) =>
   waitFor(() => {
     // eslint-disable-next-line testing-library/no-node-access
-    const virtualList = document.querySelector('.rc-virtual-list');
+    const virtualList = document.querySelector('.ant-select-dropdown-list');
     if (!virtualList) {
       throw new Error('Virtual list not found');
     }
@@ -179,7 +180,9 @@ test('calls onChange when a dataset is selected', async () => {
   await waitFor(() => {
     expect(mockOnChange).toHaveBeenCalled();
     const callArg = mockOnChange.mock.calls[0][0];
-    expect(callArg).toEqual({ key: 1, label: expect.anything(), value: 1 });
+    // antd v6 no longer includes the internal `key` field in the
+    // labeledValue passed to onChange; assert on the public value/label.
+    expect(callArg).toEqual({ label: expect.anything(), value: 1 });
   });
 });
 
@@ -200,4 +203,112 @@ test('includes table_name field in option data structure', async () => {
     const callArg = mockOnChange.mock.calls[0][1];
     expect(callArg).toHaveProperty('table_name', 'birth_names');
   });
+});
+
+test('uses API count instead of filteredResult.length', async () => {
+  supersetGetCache.clear();
+  fetchMock.clearHistory().removeRoutes();
+  fetchMock.get('glob:*/api/v1/dataset/*', {
+    result: [
+      {
+        id: 1,
+        table_name: 'ds1',
+        database: { database_name: 'db' },
+        schema: 'public',
+      },
+      {
+        id: 2,
+        table_name: 'ds2',
+        database: { database_name: 'db' },
+        schema: 'public',
+      },
+    ],
+    count: 500,
+  });
+
+  const result = await loadDatasetOptions('', 0, 100, [1, 2]);
+
+  expect(result.totalCount).toBe(500);
+  expect(result.totalCount).not.toBe(0);
+});
+
+test('returns total count from API when data is filtered', async () => {
+  supersetGetCache.clear();
+  fetchMock.clearHistory().removeRoutes();
+
+  fetchMock.get('glob:*/api/v1/dataset/*', {
+    result: [
+      {
+        id: 1,
+        table_name: 'birth_names',
+        database: { database_name: 'examples' },
+        schema: 'public',
+      },
+      {
+        id: 2,
+        table_name: 'birth_registry',
+        database: { database_name: 'examples' },
+        schema: 'public',
+      },
+      {
+        id: 3,
+        table_name: 'birth_rates',
+        database: { database_name: 'examples' },
+        schema: 'public',
+      },
+    ],
+    count: 25,
+  });
+
+  // Search for 'birth' and exclude dataset id 2 (client-side filtering)
+  const result = await loadDatasetOptions('birth', 0, 100, [2]);
+
+  expect(result.totalCount).toBe(25);
+  expect(result.data).toHaveLength(2);
+  expect(result.data.find(item => item.value === 2)).toBeUndefined();
+});
+
+test('does not exclude semantic views that share dataset IDs', async () => {
+  supersetGetCache.clear();
+  fetchMock.clearHistory().removeRoutes();
+
+  const originalFeatureFlags = window.featureFlags;
+  window.featureFlags = {
+    ...originalFeatureFlags,
+    SEMANTIC_LAYERS: true,
+  };
+
+  try {
+    fetchMock.get('glob:*/api/v1/datasource/*', {
+      result: [
+        {
+          id: 7,
+          table_name: 'orders_dataset',
+          kind: 'physical',
+          database: { database_name: 'examples' },
+          schema: 'public',
+        },
+        {
+          id: 7,
+          table_name: 'orders_semantic_view',
+          kind: 'semantic_view',
+          database: { database_name: 'semantic_layer' },
+          schema: null,
+        },
+      ],
+      count: 2,
+    });
+
+    const result = await loadDatasetOptions('', 0, 100, [7]);
+
+    expect(result.totalCount).toBe(2);
+    expect(result.data).toHaveLength(1);
+    expect(result.data[0]).toMatchObject({
+      value: 'sv:7',
+      kind: 'semantic_view',
+      table_name: 'orders_semantic_view',
+    });
+  } finally {
+    window.featureFlags = originalFeatureFlags;
+  }
 });

@@ -16,13 +16,14 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { t, validateNonEmpty } from '@superset-ui/core';
+import { validateNonEmpty } from '@superset-ui/core';
+import { t } from '@apache-superset/core/translation';
 import {
-  ControlPanelConfig,
   getStandardizedControls,
   sections,
   sharedControls,
 } from '@superset-ui/chart-controls';
+import type { ControlPanelConfig } from '@superset-ui/chart-controls';
 
 const config: ControlPanelConfig = {
   /**

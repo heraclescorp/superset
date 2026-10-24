@@ -16,8 +16,16 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { ensureIsArray, JsonArray, t } from '@superset-ui/core';
+import { t } from '@apache-superset/core/translation';
 import {
+  ensureIsArray,
+  getColumnLabel,
+  JsonArray,
+  QueryFormColumn,
+} from '@superset-ui/core';
+import { GenericDataType } from '@apache-superset/core/common';
+import {
+  checkColumnType,
   ControlPanelConfig,
   ControlPanelsContainerProps,
   ControlSetRow,
@@ -32,13 +40,17 @@ import {
 import {
   legendSection,
   minorTicks,
+  axisTicks,
+  gridlines,
   richTooltipSection,
   seriesOrderSection,
-  showValueSection,
+  showValueSectionWithoutStream,
   truncateXAxis,
   xAxisBounds,
   xAxisLabelRotation,
   xAxisLabelInterval,
+  forceMaxInterval,
+  colorByPrimaryAxisSection,
 } from '../../../controls';
 
 import { OrientationType } from '../../types';
@@ -82,7 +94,7 @@ function createAxisTitleControl(axis: 'x' | 'y'): ControlSetRow[] {
           clearable: true,
           label: t('Axis title margin'),
           renderTrigger: true,
-          default: sections.TITLE_MARGIN_OPTIONS[0],
+          default: sections.TITLE_MARGIN_OPTIONS[3],
           choices: formatSelectOptions(sections.TITLE_MARGIN_OPTIONS),
           visibility: ({ controls }: ControlPanelsContainerProps) =>
             isXAxis ? isVertical(controls) : isHorizontal(controls),
@@ -115,7 +127,7 @@ function createAxisTitleControl(axis: 'x' | 'y'): ControlSetRow[] {
           clearable: true,
           label: t('Axis title margin'),
           renderTrigger: true,
-          default: sections.TITLE_MARGIN_OPTIONS[1],
+          default: sections.TITLE_MARGIN_OPTIONS[4],
           choices: formatSelectOptions(sections.TITLE_MARGIN_OPTIONS),
           visibility: ({ controls }: ControlPanelsContainerProps) =>
             isXAxis ? isHorizontal(controls) : isVertical(controls),
@@ -151,16 +163,38 @@ function createAxisControl(axis: 'x' | 'y'): ControlSetRow[] {
     Boolean(controls?.orientation.value === OrientationType.Vertical);
   const isHorizontal = (controls: ControlStateMapping) =>
     Boolean(controls?.orientation.value === OrientationType.Horizontal);
+  const isNumericXAxis = (controls: ControlStateMapping) =>
+    checkColumnType(
+      getColumnLabel(controls?.x_axis?.value as QueryFormColumn),
+      controls?.datasource?.datasource,
+      [GenericDataType.Numeric],
+    );
+
   return [
     [
       {
         name: 'x_axis_time_format',
         config: {
           ...sharedControls.x_axis_time_format,
-          default: 'smart_date',
           description: `${D3_TIME_FORMAT_DOCS}. ${TIME_SERIES_DESCRIPTION_TEXT}`,
           visibility: ({ controls }: ControlPanelsContainerProps) =>
-            isXAxis ? isVertical(controls) : isHorizontal(controls),
+            (isXAxis ? isVertical(controls) : isHorizontal(controls)) &&
+            !isNumericXAxis(controls),
+          disableStash: true,
+          resetOnHide: false,
+        },
+      },
+    ],
+    [
+      {
+        name: 'x_axis_number_format',
+        config: {
+          ...sharedControls.x_axis_number_format,
+          default: '~g',
+          mapStateToProps: undefined,
+          visibility: ({ controls }: ControlPanelsContainerProps) =>
+            (isXAxis ? isVertical(controls) : isHorizontal(controls)) &&
+            isNumericXAxis(controls),
           disableStash: true,
           resetOnHide: false,
         },
@@ -214,7 +248,8 @@ function createAxisControl(axis: 'x' | 'y'): ControlSetRow[] {
           default: logAxis,
           description: t('Logarithmic axis'),
           visibility: ({ controls }: ControlPanelsContainerProps) =>
-            isXAxis ? isHorizontal(controls) : isVertical(controls),
+            (!controls?.stack?.value || Boolean(controls?.logAxis?.value)) &&
+            (isXAxis ? isHorizontal(controls) : isVertical(controls)),
           disableStash: true,
           resetOnHide: false,
         },
@@ -325,7 +360,8 @@ const config: ControlPanelConfig = {
         ...seriesOrderSection,
         ['color_scheme'],
         ['time_shift_color'],
-        ...showValueSection,
+        ...showValueSectionWithoutStream,
+        ...colorByPrimaryAxisSection,
         [
           {
             name: 'stackDimension',
@@ -338,13 +374,8 @@ const config: ControlPanelConfig = {
               description: t(
                 'Stack in groups, where each group corresponds to a dimension',
               ),
-              shouldMapStateToProps: (
-                prevState,
-                state,
-                controlState,
-                chartState,
-              ) => true,
-              mapStateToProps: (state, controlState, chartState) => {
+              shouldMapStateToProps: () => true,
+              mapStateToProps: state => {
                 const value: JsonArray = ensureIsArray(
                   state.controls.groupby?.value,
                 ) as JsonArray;
@@ -360,23 +391,45 @@ const config: ControlPanelConfig = {
           },
         ],
         [minorTicks],
+        [axisTicks],
+        [gridlines],
         ['zoomable'],
         ...legendSection,
         [<ControlSubSectionHeader>{t('X Axis')}</ControlSubSectionHeader>],
         ...createAxisControl('x'),
         [truncateXAxis],
         [xAxisBounds],
+        [forceMaxInterval],
         ...richTooltipSection,
         [<ControlSubSectionHeader>{t('Y Axis')}</ControlSubSectionHeader>],
         ...createAxisControl('y'),
+        ['echart_options'],
       ],
     },
   ],
-  formDataOverrides: formData => ({
-    ...formData,
-    metrics: getStandardizedControls().popAllMetrics(),
-    groupby: getStandardizedControls().popAllColumns(),
-  }),
+  controlOverrides: {
+    stack: {
+      shouldMapStateToProps: () => true,
+      mapStateToProps: ({ controls }) => ({
+        disabled: Boolean(controls.logAxis?.value) && !controls.stack?.value,
+        warning: controls.logAxis?.value
+          ? t('Turn off the logarithmic axis before stacking bars')
+          : null,
+      }),
+    },
+  },
+  formDataOverrides: formData => {
+    // Reset stack to null if it's Stream when switching to Bar chart
+    const formDataWithStack = formData as Record<string, unknown>;
+    return {
+      ...formData,
+      metrics: getStandardizedControls().popAllMetrics(),
+      groupby: getStandardizedControls().popAllColumns(),
+      ...(formDataWithStack.stack === StackControlsValue.Stream && {
+        stack: null,
+      }),
+    };
+  },
 };
 
 export default config;

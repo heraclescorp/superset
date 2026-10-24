@@ -14,21 +14,20 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-
 """add csv_filename column to report schedule
 
 Revision ID: 69cc698471e1
-Revises: c233f5365c9e
+Revises: 48cbb571fa3a
 Create Date: 2025-09-12 16:04:31.052234
 
 """
 
-import sqlalchemy as sa
-from alembic import op
-
 # revision identifiers, used by Alembic.
-revision = "69cc698471e1"
-down_revision = "c233f5365c9e"
+revision = '69cc698471e1'
+down_revision = '48cbb571fa3a'
+
+from alembic import op
+import sqlalchemy as sa
 
 
 def upgrade():

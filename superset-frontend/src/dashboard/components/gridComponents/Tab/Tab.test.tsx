@@ -27,10 +27,14 @@ import {
 import DashboardComponent from 'src/dashboard/containers/DashboardComponent';
 import { EditableTitle } from '@superset-ui/core/components';
 import { setEditMode, onRefresh } from 'src/dashboard/actions/dashboardState';
+import * as getBootstrapData from 'src/utils/getBootstrapData';
 
-import getChartIdsFromComponent from 'src/dashboard/util/getChartIdsFromComponent';
-import Tab from './Tab';
+import type { FC } from 'react';
+import ActualTab from './Tab';
 import Markdown from '../Markdown';
+
+// Cast to loosely-typed component to avoid needing every required prop in test mocks
+const Tab = ActualTab as unknown as FC<Record<string, unknown>>;
 
 jest.mock('src/dashboard/util/getChartIdsFromComponent', () =>
   jest.fn(() => []),
@@ -136,6 +140,9 @@ const createProps = () => ({
   handleComponentDrop: jest.fn(),
   updateComponents: jest.fn(),
   setDirectPathToChild: jest.fn(),
+  onResizeStart: jest.fn(),
+  onResize: jest.fn(),
+  onResizeStop: jest.fn(),
 });
 
 beforeEach(() => {
@@ -152,6 +159,44 @@ test('Render tab (no content)', () => {
   expect(screen.getByText('🚀 Aspiring Developers')).toBeInTheDocument();
   expect(EditableTitle).toHaveBeenCalledTimes(1);
   expect(getByTestId('dragdroppable-object')).toBeInTheDocument();
+});
+
+test('passes correct canEdit and editing props to EditableTitle', () => {
+  const props = createProps();
+
+  props.editMode = true;
+  props.isFocused = false;
+  props.renderType = 'RENDER_TAB';
+  render(<Tab {...props} />, {
+    useRedux: true,
+    useDnd: true,
+  });
+
+  expect(EditableTitle).toHaveBeenCalledWith(
+    expect.objectContaining({
+      title: '🚀 Aspiring Developers',
+      canEdit: true,
+      editing: false,
+    }),
+    expect.anything(),
+  );
+
+  (EditableTitle as jest.Mock).mockClear();
+
+  const focusedProps = { ...props, isFocused: true };
+  render(<Tab {...focusedProps} />, {
+    useRedux: true,
+    useDnd: true,
+  });
+
+  expect(EditableTitle).toHaveBeenCalledWith(
+    expect.objectContaining({
+      title: '🚀 Aspiring Developers',
+      canEdit: true,
+      editing: true,
+    }),
+    expect.anything(),
+  );
 });
 
 test('Render tab (no content) editMode:true', () => {
@@ -188,11 +233,15 @@ test('Drop on a tab', async () => {
       <Markdown
         id="MARKDOWN-1"
         parentId="GRID_ID"
-        parentComponent={{
-          id: 'GRID_ID',
-          type: 'GRID',
-          parents: ['ROOT_ID'],
-        }}
+        parentComponent={
+          {
+            id: 'GRID_ID',
+            type: 'GRID',
+            parents: ['ROOT_ID'],
+            children: [],
+            meta: {},
+          } as any
+        }
         depth={0}
         editMode
         index={1}
@@ -440,6 +489,36 @@ test('Render tab content with no children, editMode: true, canEdit: true', () =>
   ).toHaveAttribute('href', '/chart/add?dashboard_id=23');
 });
 
+test('empty-tab "create a new chart" link is single-prefixed under subdirectory deployment', () => {
+  // The empty-tab CTA composes the chart-add URL via ensureAppRoot. Under
+  // SUPERSET_APP_ROOT=/superset the rendered href must be exactly
+  // `/superset/chart/add?dashboard_id=23` — not `/chart/add?…` (no prefix)
+  // and not `/superset/superset/chart/add?…` (double prefix). The link uses
+  // target="_blank", so basename routing does NOT re-apply the prefix.
+  const applicationRootSpy = jest
+    .spyOn(getBootstrapData, 'applicationRoot')
+    .mockReturnValue('/superset');
+
+  try {
+    const props = createProps();
+    props.editMode = true;
+    props.component.children = [];
+    render(<Tab {...props} />, {
+      useRedux: true,
+      useDnd: true,
+      initialState: {
+        dashboardInfo: { dash_edit_perm: true },
+      },
+    });
+
+    expect(
+      screen.getByRole('link', { name: 'create a new chart' }),
+    ).toHaveAttribute('href', '/superset/chart/add?dashboard_id=23');
+  } finally {
+    applicationRootSpy.mockRestore();
+  }
+});
+
 test('Drag to empty state, editMode: true, canEdit: true', async () => {
   const props = createProps();
   props.editMode = true;
@@ -523,7 +602,8 @@ test('AnchorLink does not render in embedded mode', () => {
 
 test('Should refresh charts when tab becomes active after dashboard refresh', async () => {
   jest.clearAllMocks();
-  jest.mocked(getChartIdsFromComponent).mockReturnValue([101, 102]);
+  const getChartIdsFromComponent = require('src/dashboard/util/getChartIdsFromComponent');
+  getChartIdsFromComponent.mockReturnValue([101, 102]);
 
   const props = createProps();
   props.renderType = 'RENDER_TAB_CONTENT';
@@ -567,13 +647,15 @@ test('Should refresh charts when tab becomes active after dashboard refresh', as
     true, // Force refresh
     0, // Interval
     23, // Dashboard ID
+    false, // skipFiltersRefresh
     true, // isLazyLoad flag
   );
 });
 
 test('Should not refresh charts when tab becomes active if no dashboard refresh occurred', async () => {
   jest.clearAllMocks();
-  jest.mocked(getChartIdsFromComponent).mockReturnValue([101]);
+  const getChartIdsFromComponent = require('src/dashboard/util/getChartIdsFromComponent');
+  getChartIdsFromComponent.mockReturnValue([101]);
 
   const props = createProps();
   props.renderType = 'RENDER_TAB_CONTENT';
@@ -610,8 +692,9 @@ test('Should not refresh charts when tab becomes active if no dashboard refresh 
 
 test('Should not cause infinite refresh loop with nested tabs - regression test', async () => {
   jest.clearAllMocks();
-  (getChartIdsFromComponent as jest.Mock).mockReset();
-  (getChartIdsFromComponent as jest.Mock).mockReturnValue([201, 202]);
+  const getChartIdsFromComponent = require('src/dashboard/util/getChartIdsFromComponent');
+  getChartIdsFromComponent.mockReset();
+  getChartIdsFromComponent.mockReturnValue([201, 202]);
 
   const props = createProps();
   props.renderType = 'RENDER_TAB_CONTENT';
@@ -654,10 +737,8 @@ test('Should not cause infinite refresh loop with nested tabs - regression test'
 
   // REGRESSION TEST: Multiple re-renders should NOT trigger additional refreshes
   // This simulates the infinite loop scenario that was happening with nested tabs
-  // eslint-disable-next-line no-await-in-loop
   for (let i = 0; i < 5; i += 1) {
     rerender(<Tab {...props} isComponentVisible />);
-    // eslint-disable-next-line no-await-in-loop
     await new Promise(resolve => setTimeout(resolve, 20));
   }
 
@@ -666,8 +747,9 @@ test('Should not cause infinite refresh loop with nested tabs - regression test'
 
 test('Should use isLazyLoad flag for tab refreshes', async () => {
   jest.clearAllMocks();
-  (getChartIdsFromComponent as jest.Mock).mockReset();
-  (getChartIdsFromComponent as jest.Mock).mockReturnValue([401, 402]);
+  const getChartIdsFromComponent = require('src/dashboard/util/getChartIdsFromComponent');
+  getChartIdsFromComponent.mockReset();
+  getChartIdsFromComponent.mockReturnValue([401, 402]);
 
   const props = createProps();
   props.renderType = 'RENDER_TAB_CONTENT';
@@ -706,6 +788,7 @@ test('Should use isLazyLoad flag for tab refreshes', async () => {
     true, // force
     0, // interval
     42, // dashboardId
+    false, // skipFiltersRefresh
     true, // isLazyLoad should be true to prevent infinite loops
   );
 });

@@ -16,6 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+import { mockUserSubjectsBootstrapData } from 'spec/helpers/mockBootstrapData';
 import {
   render,
   screen,
@@ -29,10 +30,7 @@ import { configureStore } from '@reduxjs/toolkit';
 import fetchMock from 'fetch-mock';
 import * as hooks from 'src/views/CRUD/hooks';
 import handleResourceExport from 'src/utils/export';
-import { handleDashboardDelete } from 'src/views/CRUD/utils';
 import DashboardTable from './DashboardTable';
-
-const mockHandleDashboardDelete = handleDashboardDelete as jest.Mock;
 
 // Mock the export module
 jest.mock('src/utils/export', () => ({
@@ -40,22 +38,23 @@ jest.mock('src/utils/export', () => ({
   default: jest.fn(),
 }));
 
+jest.mock('src/utils/getBootstrapData', () =>
+  mockUserSubjectsBootstrapData([1]),
+);
+
 const mockExport = handleResourceExport as jest.MockedFunction<
   typeof handleResourceExport
 >;
 
-jest.mock('src/views/CRUD/utils', () => {
-  const actual = jest.requireActual('src/views/CRUD/utils');
-  return {
-    ...actual,
-    handleDashboardDelete: jest
-      .fn()
-      .mockImplementation((dashboard, refreshData) => {
-        refreshData();
-        return Promise.resolve();
-      }),
-  };
-});
+jest.mock('src/views/CRUD/utils', () => ({
+  ...jest.requireActual('src/views/CRUD/utils'),
+  handleDashboardDelete: jest
+    .fn()
+    .mockImplementation((dashboard, refreshData) => {
+      refreshData();
+      return Promise.resolve();
+    }),
+}));
 
 // Mock the CRUD hooks
 jest.mock('src/views/CRUD/hooks', () => ({
@@ -84,6 +83,7 @@ const mockDashboards = [
     changed_on_delta_humanized: '1 day ago',
     url: '/dashboard/1',
     thumbnail_url: '/thumbnail/1',
+    editors: [{ id: 1, label: 'Test User', type: 1 }],
   },
   {
     id: 2,
@@ -91,6 +91,7 @@ const mockDashboards = [
     changed_on_delta_humanized: '2 days ago',
     url: '/dashboard/2',
     thumbnail_url: '/thumbnail/2',
+    editors: [{ id: 1, label: 'Test User', type: 1 }],
   },
 ];
 
@@ -133,13 +134,15 @@ beforeEach(() => {
     }),
   );
 
+  const getDashboardMockUrl = 'glob:*/api/v1/dashboard/*';
+  fetchMock.removeRoute(getDashboardMockUrl);
   fetchMock.get(
-    'glob:*/api/v1/dashboard/*',
+    getDashboardMockUrl,
     {
       result: mockDashboards[0],
     },
-    { overwriteRoutes: true },
-  ); // Add overwriteRoutes option
+    { name: getDashboardMockUrl },
+  );
 
   // Mock loading state for first render
   jest.spyOn(hooks, 'useListViewResource').mockImplementationOnce(() => ({
@@ -233,10 +236,10 @@ test('switches to Mine tab correctly', async () => {
 
 test('handles create dashboard button click', async () => {
   const assignMock = jest.fn();
-  Object.defineProperty(window, 'location', {
-    value: { assign: assignMock },
-    writable: true,
-  });
+  const locationSpy = jest.spyOn(window, 'location', 'get').mockReturnValue({
+    ...window.location,
+    assign: assignMock,
+  } as Location);
 
   render(
     <Router history={history}>
@@ -246,8 +249,17 @@ test('handles create dashboard button click', async () => {
   );
 
   const createButton = screen.getByRole('button', { name: /dashboard$/i });
+  // No pending state before the click — the button is idle.
+  expect(createButton).not.toHaveClass('ant-btn-loading');
   await userEvent.click(createButton);
-  expect(assignMock).toHaveBeenCalledWith('/dashboard/new');
+  expect(assignMock).toHaveBeenCalledWith('/dashboard/new/');
+  // /dashboard/new/ is a hard navigation whose GET creates the dashboard
+  // server-side; the button must show a loading state for the whole
+  // round-trip instead of looking dead (issue #43385).
+  await waitFor(() => {
+    expect(createButton).toHaveClass('ant-btn-loading');
+  });
+  locationSpy.mockRestore();
 });
 
 test('switches to Other tab when available', async () => {
@@ -273,7 +285,7 @@ test('handles bulk dashboard export with correct ID and shows spinner', async ()
   // Mock export to take some time before calling the done callback
   mockExport.mockImplementation(
     (resource: string, ids: number[], done: () => void) =>
-      new Promise<void>(resolve => {
+      new Promise(resolve => {
         setTimeout(() => {
           done();
           resolve();
@@ -408,6 +420,8 @@ test('handles dashboard deletion confirmation', async () => {
 });
 
 test('passes correct parameters to handleDashboardDelete for Other tab', async () => {
+  const mockHandleDashboardDelete =
+    require('src/views/CRUD/utils').handleDashboardDelete;
   mockHandleDashboardDelete.mockClear();
 
   const refreshDataMock = jest.fn();

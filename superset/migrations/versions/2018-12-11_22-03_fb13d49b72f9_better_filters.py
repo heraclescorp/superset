@@ -26,7 +26,7 @@ import logging
 
 from alembic import op
 from sqlalchemy import Column, Integer, String, Text
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import declarative_base
 
 from superset import db
 from superset.utils import json
@@ -51,7 +51,7 @@ class Slice(Base):
 
 def upgrade_slice(slc):
     params = json.loads(slc.params)
-    logger.info(f"Upgrading {slc.slice_name}")
+    logger.info("Upgrading %s", slc.slice_name)
     cols = params.get("groupby")
     metric = params.get("metric")
     if cols:
@@ -96,7 +96,7 @@ def downgrade():
     for slc in filter_box_slices.all():
         try:
             params = json.loads(slc.params)
-            logger.info(f"Downgrading {slc.slice_name}")
+            logger.info("Downgrading %s", slc.slice_name)
             flts = params.get("filter_configs")
             if not flts:
                 continue

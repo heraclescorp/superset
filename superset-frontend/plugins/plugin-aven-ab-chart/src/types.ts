@@ -16,7 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { TimeseriesDataRecord } from '@superset-ui/core';
+import type { TimeseriesDataRecord } from '@superset-ui/core';
 
 export interface AvenABChartStylesProps {
   height: number;

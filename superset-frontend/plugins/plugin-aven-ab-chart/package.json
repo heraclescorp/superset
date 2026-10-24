@@ -2,27 +2,27 @@
   "name": "@aven-superset-ui/plugin-aven-ab-chart",
   "version": "0.18.25",
   "description": "Superset Chart - aven ab",
-  "sideEffects": false,
-  "main": "lib/index.js",
-  "module": "esm/index.js",
-  "files": [
-    "esm",
-    "lib"
+  "keywords": [
+    "superset"
   ],
+  "homepage": "https://github.com/apache/superset/tree/master/superset-frontend/plugins/plugin-chart-pivot-table#readme",
+  "bugs": {
+    "url": "https://github.com/apache/superset/issues"
+  },
+  "license": "Apache-2.0",
+  "author": "Superset",
   "repository": {
     "type": "git",
     "url": "https://github.com/apache/superset.git",
     "directory": "superset-frontend/plugins/plugin-chart-pivot-table"
   },
-  "keywords": [
-    "superset"
+  "files": [
+    "esm",
+    "lib"
   ],
-  "author": "Superset",
-  "license": "Apache-2.0",
-  "bugs": {
-    "url": "https://github.com/apache/superset/issues"
-  },
-  "homepage": "https://github.com/apache/superset/tree/master/superset-frontend/plugins/plugin-chart-pivot-table#readme",
+  "sideEffects": false,
+  "main": "lib/index.js",
+  "module": "esm/index.js",
   "publishConfig": {
     "access": "restricted"
   },
@@ -30,18 +30,19 @@
     "@stdlib/stats-base-dists-normal-cdf": "^0.2.1",
     "@stdlib/types": "^0.4.3"
   },
-  "peerDependencies": {
-    "@ant-design/icons": "^5.0.1",
-    "@superset-ui/chart-controls": "*",
-    "@superset-ui/core": "*",
-    "lodash": "^4.17.11",
-    "prop-types": "*",
-    "react": "^16.13.1 || ^17.0.0",
-    "react-dom": "^16.13.1 || ^17.0.0"
-  },
   "devDependencies": {
     "@babel/types": "^7.24.0",
     "@types/jest": "^29.5.12",
     "jest": "^29.7.0"
+  },
+  "peerDependencies": {
+    "@ant-design/icons": "^5.0.1",
+    "@apache-superset/core": "*",
+    "@superset-ui/chart-controls": "*",
+    "@superset-ui/core": "*",
+    "lodash": "^4.17.11",
+    "prop-types": "*",
+    "react": "^16.13.1 || ^17.0.0 || ^18.0.0",
+    "react-dom": "^16.13.1 || ^17.0.0 || ^18.0.0"
   }
 }

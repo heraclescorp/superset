@@ -13,10 +13,6 @@ RUN /app/.venv/bin/python -m ensurepip --upgrade && \
     /app/.venv/bin/python -m pip install "apache-superset[postgres,clickhouse,snowflake,gsheets,gsheets-export]"\
     python-ldap==3.4.4
 
-RUN /app/.venv/bin/python -m pip install playwright==1.44.0 && \
-    playwright install-deps && \
-    playwright install chromium
-
 RUN /app/.venv/bin/python -m pip install opentelemetry-api==1.29.0 && \
     /app/.venv/bin/python -m pip install opentelemetry-sdk==1.29.0
 

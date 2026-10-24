@@ -14,11 +14,11 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 from superset.dashboards.permalink.types import DashboardPermalinkState
 
 
-class ReportScheduleExtra(TypedDict, total=False):
+class ReportScheduleExtra(TypedDict):
     dashboard: DashboardPermalinkState
-    email_from: str
+    email_from: NotRequired[str | None]
