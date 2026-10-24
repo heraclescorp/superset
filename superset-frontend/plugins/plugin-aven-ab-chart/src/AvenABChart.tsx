@@ -27,7 +27,8 @@
 
 import { createRef, useMemo } from 'react';
 import type { ReactNode } from 'react';
-import { formatNumber, styled } from '@superset-ui/core';
+import { formatNumber } from '@superset-ui/core';
+import { styled } from '@apache-superset/core/theme';
 import { t } from '@apache-superset/core/translation';
 import cdf from '@stdlib/stats-base-dists-normal-cdf';
 import type { AvenABChartProps, AvenABChartStylesProps } from './types';
