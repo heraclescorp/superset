@@ -1285,11 +1285,18 @@ class TestChartApi(ApiEditorsTestCaseMixin, InsertChartMixin, SupersetTestCase):
         db.session.delete(chart)
         db.session.commit()
 
-    def test_get_chart_not_found(self):
+    @parameterized.expand(
+        [
+            (1000,),
+            ("not-a-valid-uuid",),
+            ("550e8400-e29b-41d4-a716-invaliduuid",),
+            ("²",),
+        ]
+    )
+    def test_get_chart_not_found(self, chart_id):
         """
         Chart API: Test get chart not found
         """
-        chart_id = 1000
         self.login(ADMIN_USERNAME)
         uri = f"api/v1/chart/{chart_id}"
         rv = self.get_assert_metric(uri, "get")

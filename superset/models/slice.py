@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 from typing import Any, TYPE_CHECKING
 from urllib import parse
+from uuid import UUID
 
 import sqlalchemy as sqla
 from flask import has_request_context, url_for
@@ -37,7 +38,7 @@ from sqlalchemy import (
 from sqlalchemy.engine.base import Connection
 from sqlalchemy.orm import relationship
 from sqlalchemy.orm.mapper import Mapper
-from sqlalchemy.sql.elements import BinaryExpression
+from sqlalchemy.sql.elements import ColumnElement
 from superset_core.common.models import Chart as CoreChart
 
 from superset import db, is_feature_enabled, security_manager
@@ -488,12 +489,16 @@ class Slice(  # pylint: disable=too-many-public-methods
         return qry.one_or_none()
 
 
-def id_or_uuid_filter(id_or_uuid: str | int) -> BinaryExpression:
+def id_or_uuid_filter(id_or_uuid: str | int) -> ColumnElement[bool]:
     if isinstance(id_or_uuid, int):
         return Slice.id == id_or_uuid
     if id_or_uuid.isdecimal():
         return Slice.id == int(id_or_uuid)
-    return Slice.uuid == id_or_uuid
+    try:
+        chart_uuid = UUID(id_or_uuid)
+    except ValueError:
+        return sqla.false()
+    return Slice.uuid == chart_uuid
 
 
 def set_related_perm(_mapper: Mapper, _connection: Connection, target: Slice) -> None:

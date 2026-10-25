@@ -92,7 +92,7 @@ class TestSlice:
         ]
     )
     def test_id_or_uuid_filter(self, test_name, input_value):
-        """Test id_or_uuid_filter returns correct BinaryExpression."""
+        """Build a SQL predicate for numeric, UUID, and malformed identifiers."""
         result = id_or_uuid_filter(input_value)
         assert result is not None
 

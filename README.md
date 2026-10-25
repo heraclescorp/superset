@@ -56,6 +56,33 @@ A modern, enterprise-ready business intelligence web application.
 - **[Administrator Guide](https://superset.apache.org/admin-docs/)** — Install, configure, and operate Superset. Covers security, scaling, and database drivers.
 - **[Developer Guide](https://superset.apache.org/developer-docs/)** — Contribute to Superset or build on its REST API and extension framework.
 
+### Aven production images
+
+Build from a committed checkout with an explicit release tag:
+
+```bash
+TAG="7.0.0rc2-aven-$(git rev-parse --short=12 HEAD)"
+./build.sh "$TAG"   # Build locally, including Chromium and Aven's database drivers
+./deploy.sh "$TAG"  # Build and publish the same tagged image to ECR
+```
+
+`aven.Dockerfile` builds all fork frontend assets and frontend translations,
+WebSocket code, and Python sources on a digest-pinned official runtime with
+Chromium. Build images are pinned too; the mirrored SheetJS archive must match
+the unchanged lockfile's integrity before installation. `latest` is rejected.
+The final image records its
+source commit in its OCI revision label and Superset version metadata. Publishing
+does not deploy it: update the pinned image in Heracles Terraform and follow its
+metadata-database migration and rollout procedure.
+
+Pushes to `avenmaster-7.0.0rc2` also build a SHA-tagged Docker archive in
+`.github/workflows/docker.yml`, without registry credentials. Manual dispatch
+with `aven_release_tag` is available for other explicit release tags. The artifact
+contains the image, checksum, and source metadata. Verify the checksum and revision,
+load it with `docker load`, then authenticate to ECR and push that explicit tag.
+The CI artifact job does not deploy or publish the image automatically.
+
+
 [**Why Superset?**](#why-superset) |
 [**Supported Databases**](#supported-databases) |
 [**Release Notes**](https://github.com/apache/superset/blob/master/RELEASING/README.md#release-notes-for-recent-releases) |

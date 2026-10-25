@@ -644,6 +644,35 @@ const AlertReportModal: FunctionComponent<AlertReportModalProps> = ({
   const [emailFromError, setEmailFromError] = useState(false);
   const [csvFilename, setCsvFilename] = useState<string>('');
   const [csvFilenameError, setCsvFilenameError] = useState(false);
+  const updateCsvFilename = () => {
+    const filenamePart = (value: ReactNode | undefined, fallback: string) =>
+      typeof value === 'string'
+        ? value.replace(/[^a-zA-Z0-9]/g, '_') || fallback
+        : fallback;
+
+    if (contentType === 'chart') {
+      if (currentAlert?.name || currentAlert?.chart?.label) {
+        const reportName = filenamePart(currentAlert?.name, 'report');
+        const chartName = filenamePart(currentAlert?.chart?.label, 'chart');
+        setCsvFilename(`${reportName}_${chartName}.csv`);
+      } else {
+        setCsvFilename('');
+      }
+    } else if (contentType === 'dashboard') {
+      if (currentAlert?.name || currentAlert?.dashboard?.label) {
+        const reportName = filenamePart(currentAlert?.name, 'report');
+        const dashboardName = filenamePart(
+          currentAlert?.dashboard?.label,
+          'dashboard',
+        );
+        setCsvFilename(`${reportName}_${dashboardName}.csv`);
+      } else {
+        setCsvFilename('');
+      }
+    } else {
+      setCsvFilename('');
+    }
+  };
 
   const allowedNotificationMethodsCount = useMemo(
     () =>
@@ -2110,27 +2139,6 @@ const AlertReportModal: FunctionComponent<AlertReportModalProps> = ({
     return titleText;
   };
 
-  const updateCsvFilename = () => {
-    if (contentType === 'chart') {
-      if (currentAlert?.name || currentAlert?.chart?.label) {
-        setCsvFilename(
-          `${currentAlert?.name?.replace(/[^a-zA-Z0-9]/g, '_') || 'report'}_${currentAlert?.chart?.label?.replace(/[^a-zA-Z0-9]/g, '_') || 'chart'}.csv`,
-        );
-      } else {
-        setCsvFilename('');
-      }
-    } else if (contentType === 'dashboard') {
-      if (currentAlert?.name || currentAlert?.dashboard?.label) {
-        setCsvFilename(
-          `${currentAlert?.name?.replace(/[^a-zA-Z0-9]/g, '_') || 'report'}_${currentAlert?.dashboard?.label?.replace(/[^a-zA-Z0-9]/g, '_') || 'dashboard'}.csv`,
-        );
-      } else {
-        setCsvFilename('');
-      }
-    } else {
-      setCsvFilename('');
-    }
-  };
   const handleErrorUpdate = (hasError: boolean) => {
     setEmailError(hasError);
   };

@@ -16,8 +16,10 @@
 # under the License.
 # pylint: disable=unused-argument, import-outside-toplevel
 from datetime import datetime
+from typing import Any
 
 import numpy as np
+import pandas as pd
 import pytest
 from pandas import Timestamp
 from pandas._libs.tslibs import NaT
@@ -41,6 +43,49 @@ def test_df_to_records() -> None:
         {"a": "a1", "b": "b1", "c": "c1"},
         {"a": "a2", "b": "b2", "c": "c2"},
     ]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param([], id="empty-list"),
+        pytest.param([None], id="singleton-null-list"),
+        pytest.param([np.nan], id="singleton-nan-list"),
+        pytest.param([None, np.nan], id="multiple-null-list"),
+        pytest.param([[None]], id="nested-null-list"),
+        pytest.param({}, id="empty-dict"),
+        pytest.param({"value": None}, id="null-dict"),
+        pytest.param({"value": [None, np.nan]}, id="nested-null-dict"),
+        pytest.param(np.array([]), id="empty-array"),
+        pytest.param(np.array([None], dtype=object), id="singleton-null-array"),
+        pytest.param(np.array([np.nan]), id="singleton-nan-array"),
+        pytest.param(np.array([None, np.nan], dtype=object), id="multiple-null-array"),
+        pytest.param(np.array([[None]], dtype=object), id="nested-null-array"),
+        pytest.param(np.array(None, dtype=object), id="zero-dimensional-null-array"),
+    ],
+)
+def test_df_to_records_preserves_collections(value: Any) -> None:
+    """Collection-valued cells must retain their contents, including nested nulls."""
+    df = pd.DataFrame({"value": pd.Series([value], dtype=object)})
+
+    actual = df_to_records(df)[0]["value"]
+
+    assert isinstance(actual, type(value))
+    if isinstance(value, np.ndarray):
+        np.testing.assert_equal(actual.tolist(), value.tolist())
+    else:
+        np.testing.assert_equal(actual, value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [None, np.nan, NaT, pd.NA, np.datetime64("NaT"), np.timedelta64("NaT")],
+)
+def test_df_to_records_normalizes_scalar_nulls(value: Any) -> None:
+    """Scalar missing values become None even in an object-typed column."""
+    df = pd.DataFrame({"value": pd.Series([value], dtype=object)})
+
+    assert df_to_records(df) == [{"value": None}]
 
 
 def test_df_to_records_NaT_type() -> None:  # noqa: N802

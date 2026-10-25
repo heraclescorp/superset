@@ -39,18 +39,12 @@ def _convert_big_integers(val: Any) -> Any:
 
 def _is_na(val: Any) -> bool:
     """
-    Check if a value is NA/NaN for scalar values only.
-
-    pd.isna() raises ValueError for arrays/lists, so we catch that case.
+    Check if a scalar value is NA/NaN/NaT, leaving collections unchanged.
 
     :param val: the value to check
     :returns: True if the value is NA/NaN, False otherwise
     """
-    try:
-        return bool(pd.isna(val))
-    except ValueError:
-        # pd.isna raises ValueError for arrays (e.g., lists, dicts from JSON)
-        return False
+    return pd.api.types.is_scalar(val) and bool(pd.isna(val))
 
 
 def df_to_records(dframe: pd.DataFrame) -> list[dict[str, Any]]:

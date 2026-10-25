@@ -27,7 +27,9 @@
 
 import { createRef, useMemo } from 'react';
 import type { ReactNode } from 'react';
-import { formatNumber, styled, t } from '@superset-ui/core';
+import { formatNumber } from '@superset-ui/core';
+import { styled } from '@apache-superset/core/theme';
+import { t } from '@apache-superset/core/translation';
 import cdf from '@stdlib/stats-base-dists-normal-cdf';
 import type { AvenABChartProps, AvenABChartStylesProps } from './types';
 import { TableView } from '@superset-ui/core/components';
@@ -533,7 +535,7 @@ export default function AvenABChart(props: AvenABChartProps) {
   );
 
   const timestamps = allTimestamps.map(v => ({
-    time: (new Date(v)).toISOString(),
+    time: new Date(v).toISOString(),
   }));
 
   const rows = [];

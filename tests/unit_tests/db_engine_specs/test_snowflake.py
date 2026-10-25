@@ -188,19 +188,29 @@ def test_get_extra_params(mocker: MockerFixture) -> None:
 
     database.extra = {}
     assert SnowflakeEngineSpec.get_extra_params(database) == {
-        "engine_params": {"connect_args": {"application": "Apache Superset"}}
+        "engine_params": {
+            "connect_args": {"application": "Apache Superset", "ocsp_fail_open": True}
+        }
     }
 
     database.extra = json.dumps(
         {
             "engine_params": {
-                "connect_args": {"application": "Custom user agent", "foo": "bar"}
+                "connect_args": {
+                    "application": "Custom user agent",
+                    "foo": "bar",
+                    "ocsp_fail_open": False,
+                }
             }
         }
     )
     assert SnowflakeEngineSpec.get_extra_params(database) == {
         "engine_params": {
-            "connect_args": {"application": "Custom user agent", "foo": "bar"}
+            "connect_args": {
+                "application": "Custom user agent",
+                "foo": "bar",
+                "ocsp_fail_open": False,
+            }
         }
     }
 

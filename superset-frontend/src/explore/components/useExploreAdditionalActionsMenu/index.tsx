@@ -30,13 +30,13 @@ import {
   isFeatureEnabled,
   FeatureFlag,
   getChartMetadataRegistry,
+  VizType,
 } from '@superset-ui/core';
 import type {
   Behavior,
   JsonObject,
   LatestQueryFormData,
   QueryFormData,
-  VizType,
 } from '@superset-ui/core';
 import { css, styled, useTheme } from '@apache-superset/core/theme';
 import { t } from '@apache-superset/core/translation';
@@ -194,9 +194,7 @@ export function getExportScreenshotMenuItems({
         {
           key: transparentKey,
           label: t('Transparent background'),
-          onClick: (e: {
-            domEvent: MouseEvent | KeyboardEvent;
-          }) => {
+          onClick: (e: { domEvent: MouseEvent | KeyboardEvent }) => {
             downloadAsImage(chartSelector, sliceName, true, theme, {
               format: 'png',
               backgroundType: 'transparent',
@@ -214,9 +212,7 @@ export function getExportScreenshotMenuItems({
         {
           key: solidKey,
           label: t('Solid background'),
-          onClick: (e: {
-            domEvent: MouseEvent | KeyboardEvent;
-          }) => {
+          onClick: (e: { domEvent: MouseEvent | KeyboardEvent }) => {
             downloadAsImage(chartSelector, sliceName, true, theme, {
               format: 'png',
               backgroundType: 'solid',
@@ -884,10 +880,7 @@ export const useExploreAdditionalActionsMenu = (
         disabled: !canDownloadCSV,
         onClick: () => {
           window
-            .open(
-              `/export/chart/${chartId}/google-sheets/`,
-              '_blank',
-            )
+            .open(`/export/chart/${chartId}/google-sheets/`, '_blank')
             ?.focus();
           setIsDropdownVisible(false);
         },

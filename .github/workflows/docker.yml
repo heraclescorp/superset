@@ -5,16 +5,95 @@ on:
     branches:
       - "master"
       - "[0-9].[0-9]*"
+      - "avenmaster-7.0.0rc2"
   pull_request:
     branches:
       - "master"
+  workflow_dispatch:
+    inputs:
+      aven_release_tag:
+        description: "Immutable Aven image tag to build as a downloadable artifact (no registry push)"
+        required: false
+        type: string
 
 permissions:
   contents: read
   pull-requests: read
 
 jobs:
+  # Build release-branch pushes or manual requests without publishing. Load the
+  # artifact locally for runtime smoke checks and an authenticated ECR push.
+  aven-image-artifact:
+    name: Build Aven release image artifact
+    if: >-
+      github.repository == 'heraclescorp/superset' &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/avenmaster-7.0.0rc2') ||
+       (github.event_name == 'workflow_dispatch' && inputs.aven_release_tag != ''))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    env:
+      AVEN_RELEASE_TAG: ${{ inputs.aven_release_tag }}
+    steps:
+      - name: Checkout requested source revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Select immutable release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            IMAGE_TAG="7.0.0rc2-aven-${GITHUB_SHA:0:9}"
+          else
+            IMAGE_TAG="$AVEN_RELEASE_TAG"
+          fi
+          if [[ ! "$IMAGE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ || "$IMAGE_TAG" == "latest" ]]; then
+            echo "::error::An immutable Docker image tag is required"
+            exit 1
+          fi
+          echo "IMAGE_TAG=$IMAGE_TAG" >> "$GITHUB_ENV"
+          echo "IMAGE_NAME=199658938451.dkr.ecr.us-east-2.amazonaws.com/superset:$IMAGE_TAG" >> "$GITHUB_ENV"
+      - name: Free up disk space
+        shell: bash
+        run: |
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/local/share/boost
+      - name: Build production image without publishing
+        shell: bash
+        run: ./build.sh "$IMAGE_TAG"
+      - name: Save production image and provenance
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          docker save "$IMAGE_NAME" | gzip -1 > superset-image.tar.gz
+          sha256sum superset-image.tar.gz > superset-image.tar.gz.sha256
+          docker image inspect --format \
+            '{{.Id}} {{.Os}}/{{.Architecture}} {{index .Config.Labels "org.opencontainers.image.revision"}}' \
+            "$IMAGE_NAME" > superset-image-metadata.txt
+      - name: Upload production image artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: superset-${{ env.IMAGE_TAG }}
+          path: |
+            ${{ runner.temp }}/superset-image.tar.gz
+            ${{ runner.temp }}/superset-image.tar.gz.sha256
+            ${{ runner.temp }}/superset-image-metadata.txt
+          retention-days: 7
+          compression-level: 0
+          if-no-files-found: error
+
   changes:
+    if: >-
+      github.event_name != 'workflow_dispatch' &&
+      !(github.event_name == 'push' && github.ref == 'refs/heads/avenmaster-7.0.0rc2')
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
@@ -36,6 +115,9 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
   setup_matrix:
+    if: >-
+      github.event_name != 'workflow_dispatch' &&
+      !(github.event_name == 'push' && github.ref == 'refs/heads/avenmaster-7.0.0rc2')
     runs-on: ubuntu-slim
     timeout-minutes: 5
     outputs:
@@ -55,6 +137,9 @@ jobs:
   # matrix never includes the "py311"/"py312" presets that logic protects.
   docker-command-check:
     name: verify docker build command
+    if: >-
+      github.event_name != 'workflow_dispatch' &&
+      !(github.event_name == 'push' && github.ref == 'refs/heads/avenmaster-7.0.0rc2')
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
@@ -571,7 +656,9 @@ jobs:
 
   actions-timeline:
     needs: [docker-build, docker-compose-image-tag]
-    if: always()
+    if: >-
+      always() && github.event_name != 'workflow_dispatch' &&
+      !(github.event_name == 'push' && github.ref == 'refs/heads/avenmaster-7.0.0rc2')
     runs-on: ubuntu-slim
     permissions:
       actions: read

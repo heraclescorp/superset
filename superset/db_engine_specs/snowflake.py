@@ -406,6 +406,8 @@ class SnowflakeEngineSpec(PostgresBaseEngineSpec):
         user_agent = get_user_agent(database, source)
 
         connect_args.setdefault("application", user_agent)
+        # Connector 4.8 requires an explicit OCSP mode to retain revocation checks.
+        connect_args.setdefault("ocsp_fail_open", True)
 
         return extra
 
