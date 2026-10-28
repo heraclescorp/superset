@@ -12,9 +12,6 @@ fi
 REGISTRY="199658938451.dkr.ecr.us-east-2.amazonaws.com"
 IMAGE_NAME="$REGISTRY/superset:$IMAGE_TAG"
 
-export DOCKER_CONFIG="$(mktemp -d)"
-trap 'rm -rf "$DOCKER_CONFIG"' EXIT
-
 echo 'Logging into AWS ECR'
 aws ecr get-login-password --region us-east-2 ${HERACLES_AWS_PROFILE:-} | \
   docker login --username AWS --password-stdin "$REGISTRY"
