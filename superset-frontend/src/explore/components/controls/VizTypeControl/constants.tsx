@@ -17,7 +17,8 @@
  * under the License.
  */
 import { ReactElement } from 'react';
-import { VizType, css } from '@superset-ui/core';
+import { VizType } from '@superset-ui/core';
+import { css } from '@apache-superset/core/theme';
 import { Icons } from '@superset-ui/core/components/Icons';
 import { VizMeta } from './types';
 

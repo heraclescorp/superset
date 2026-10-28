@@ -19,8 +19,10 @@ import re
 import textwrap
 from dataclasses import dataclass
 from datetime import datetime
-from email.utils import make_msgid, parseaddr
-from typing import Any, Optional
+from email.utils import getaddresses, make_msgid, parseaddr
+from io import BytesIO
+from typing import IO, Optional
+from zipfile import BadZipFile, ZipFile
 
 import nh3
 from flask import current_app
@@ -29,12 +31,13 @@ from pytz import timezone
 
 from superset import is_feature_enabled
 from superset.exceptions import SupersetErrorsException
-from superset.reports.models import ReportRecipientType
-from superset.reports.notifications.base import BaseNotification
+from superset.reports.models import ReportRecipients, ReportRecipientType
+from superset.reports.notifications.base import BaseNotification, NotificationContent
 from superset.reports.notifications.exceptions import NotificationError
 from superset.utils import json
-from superset.utils.core import HeaderDataType, recipients_string_to_list, send_email_smtp
+from superset.utils.core import HeaderDataType, send_email_smtp
 from superset.utils.decorators import statsd_gauge
+from superset.utils.link_redirect import process_html_links
 
 logger = logging.getLogger(__name__)
 
@@ -43,50 +46,53 @@ def replace_date_placeholders(text: str) -> str:
     """
     Replace date placeholders in text with current date.
     Supports user-friendly date format patterns within curly braces.
-
+    
     Examples:
     - {yyyyMMdd} -> 20240912
     - {yyyy-MM-dd} -> 2024-09-12
     - {yyMMdd} -> 240912
     - {yyyyMMdd_HHmmss} -> 20240912_143045
     - {yyyy/MM/dd} -> 2024/09/12
+    
+    Format codes:
+    - yyyy = 4-digit year, yy = 2-digit year
+    - MM = 2-digit month, M = 1-digit month
+    - dd = 2-digit day, d = 1-digit day
+    - HH = 24-hour format, hh = 12-hour format
+    - mm = minutes, ss = seconds
     """
     if not text:
         return text
-
+    
     now = datetime.now()
-
+    
     # Convert user-friendly format to Python strftime format
-    def convert_format(user_format: str) -> str:
+    def convert_format(user_format):
         # Replace common user-friendly patterns with Python strftime codes
         # Use a more robust approach to avoid double replacements
         replacements = [
-            ("yyyy", "%Y"),  # 4-digit year
-            ("yy", "%y"),  # 2-digit year
-            ("MM", "%m"),  # 2-digit month
-            ("dd", "%d"),  # 2-digit day
-            ("HH", "%H"),  # 24-hour format
-            ("hh", "%I"),  # 12-hour format
-            ("mm", "%M"),  # minutes
-            ("ss", "%S"),  # seconds
+            ('yyyy', '%Y'),  # 4-digit year
+            ('yy', '%y'),    # 2-digit year
+            ('MM', '%m'),    # 2-digit month
+            ('dd', '%d'),    # 2-digit day
+            ('HH', '%H'),    # 24-hour format
+            ('hh', '%I'),    # 12-hour format
+            ('mm', '%M'),    # minutes
+            ('ss', '%S'),    # seconds
         ]
-
+        
         python_format = user_format
         for user_code, python_code in replacements:
             python_format = python_format.replace(user_code, python_code)
-
+        
         # Handle single character patterns after double character patterns
-        python_format = re.sub(
-            r"(?<!%)(?<![a-zA-Z])M(?!%)(?![a-zA-Z])", "%m", python_format
-        )
-        python_format = re.sub(
-            r"(?<!%)(?<![a-zA-Z])d(?!%)(?![a-zA-Z])", "%d", python_format
-        )
-
+        python_format = re.sub(r'(?<!%)(?<![a-zA-Z])M(?!%)(?![a-zA-Z])', '%m', python_format)
+        python_format = re.sub(r'(?<!%)(?<![a-zA-Z])d(?!%)(?![a-zA-Z])', '%d', python_format)
+        
         return python_format
-
+    
     # Find all date format patterns like {yyyyMMdd}, {yyyy-MM-dd}, etc.
-    def replace_date_format(match: re.Match[str]) -> str:
+    def replace_date_format(match):
         user_format = match.group(1)  # Extract the format string inside braces
         try:
             python_format = convert_format(user_format)
@@ -94,10 +100,10 @@ def replace_date_placeholders(text: str) -> str:
         except ValueError:
             # If the format is invalid, return the original placeholder
             return match.group(0)
-
+    
     # Replace patterns like {yyyyMMdd}, {yyyy-MM-dd}, etc.
-    text = re.sub(r"\{([^}]+)\}", replace_date_format, text)
-
+    text = re.sub(r'\{([^}]+)\}', replace_date_format, text)
+    
     return text
 
 
@@ -122,24 +128,60 @@ ALLOWED_TAGS = {
     "ul",
 }.union(TABLE_TAGS)
 
-ALLOWED_TABLE_ATTRIBUTES = {tag: TABLE_ATTRIBUTES for tag in TABLE_TAGS}
+ALLOWED_TABLE_ATTRIBUTES = dict.fromkeys(TABLE_TAGS, TABLE_ATTRIBUTES)
 ALLOWED_ATTRIBUTES = {
     "a": {"href", "title"},
     "abbr": {"title"},
     "acronym": {"title"},
     **ALLOWED_TABLE_ATTRIBUTES,
 }
+ZIP_LOCAL_FILE_HEADER = b"PK\x03\x04"
 
-INTERNAL_EMAIL_DOMAIN = "aven.com"
-
+INTERNAL_EMAIL_DOMAIN = 'aven.com'
 
 @dataclass
 class EmailContent:
     body: str
     header_data: Optional[HeaderDataType] = None
-    data: Optional[dict[str, Any]] = None
+    data: Optional[dict[str, bytes | str]] = None
     pdf: Optional[dict[str, bytes]] = None
     images: Optional[dict[str, bytes]] = None
+
+
+def _get_csv_attachment_extension(content: bytes) -> str:
+    """Return ``zip`` for bundled CSV responses and ``csv`` otherwise."""
+    return "zip" if content.startswith(ZIP_LOCAL_FILE_HEADER) else "csv"
+
+
+def _get_xlsx_attachment_extension(content: bytes) -> str:
+    """
+    Return the attachment extension for bytes returned by the XLSX export endpoint.
+    """
+    try:
+        with ZipFile(BytesIO(content)) as zip_file:
+            names = zip_file.namelist()
+            if _is_xlsx_zip(names):
+                return "xlsx"
+
+            files = [name for name in names if not name.endswith("/")]
+            if files and all(name.lower().endswith(".xlsx") for name in files):
+                for name in files:
+                    with zip_file.open(name) as xlsx_file:
+                        if not _has_zip_signature(xlsx_file):
+                            return "xlsx"
+                return "zip"
+    except BadZipFile:
+        return "xlsx"
+
+    return "xlsx"
+
+
+def _is_xlsx_zip(names: list[str]) -> bool:
+    return "[Content_Types].xml" in names and "xl/workbook.xml" in names
+
+
+def _has_zip_signature(content: IO[bytes]) -> bool:
+    return content.read(len(ZIP_LOCAL_FILE_HEADER)) == ZIP_LOCAL_FILE_HEADER
 
 
 class EmailNotification(BaseNotification):  # pylint: disable=too-few-public-methods
@@ -148,7 +190,17 @@ class EmailNotification(BaseNotification):  # pylint: disable=too-few-public-met
     """
 
     type = ReportRecipientType.EMAIL
-    now = datetime.now(timezone("UTC"))
+
+    def __init__(
+        self, recipient: ReportRecipients, content: NotificationContent
+    ) -> None:
+        super().__init__(recipient, content)
+        # Stamp each notification with its own timestamp at construction, which
+        # happens per recipient immediately before the email is dispatched. The
+        # date rendered into the subject (when DATE_FORMAT_IN_EMAIL_SUBJECT is
+        # enabled) therefore tracks the dispatch time. A module- or class-level
+        # value would instead freeze on the first import in a long-running worker.
+        self.now = datetime.now(timezone("UTC"))
 
     @property
     def _name(self) -> str:
@@ -164,19 +216,128 @@ class EmailNotification(BaseNotification):  # pylint: disable=too-few-public-met
         return parseaddr(current_app.config["SMTP_MAIL_FROM"])[1].split("@")[1]
 
     def _error_template(self, text: str) -> str:
-        call_to_action = self._get_call_to_action()
+        # The error text is derived from exception messages that can embed
+        # data-controlled content (e.g. crafted table/column names in a DB
+        # error). Strip all HTML before interpolating it into the email body,
+        # matching the sanitization applied to the normal content path.
+        # pylint: disable=no-member
+        safe_text = nh3.clean(text, tags=set(), attributes={})
+        if self._content.include_cta:
+            return __(
+                """
+                <p>Your report/alert was unable to be generated because of the following error: %(text)s</p>
+                <p>Please check your dashboard/chart for errors.</p>
+                <p><b><a href="%(url)s">%(call_to_action)s</a></b></p>
+                """,  # noqa: E501
+                text=safe_text,
+                url=self._content.url,
+                call_to_action=self._get_call_to_action(),
+            )
         return __(
             """
             <p>Your report/alert was unable to be generated because of the following error: %(text)s</p>
             <p>Please check your dashboard/chart for errors.</p>
-            <p><b><a href="%(url)s">%(call_to_action)s</a></b></p>
             """,  # noqa: E501
-            text=text,
-            url=self._content.url,
-            call_to_action=call_to_action,
+            text=safe_text,
+        )
+
+    def _retry_error_template(self, text: str) -> str:
+        """HTML body for a per-retry-attempt failure notification."""
+        attempt = self._content.retry_attempt
+        max_attempts = self._content.retry_max_attempts
+        retries_remaining = (max_attempts or 0) - (attempt or 0)
+        # pylint: disable=no-member
+        safe_text = nh3.clean(text, tags=set(), attributes={})
+        cta_tag = self._render_call_to_action_paragraph()
+
+        return textwrap.dedent(
+            f"""
+            <html>
+              <head>
+                <style type="text/css">
+                  table, th, td {{
+                    border-collapse: collapse;
+                    border-color: rgb(200, 212, 227);
+                    color: rgb(42, 63, 95);
+                    padding: 4px 8px;
+                  }}
+                </style>
+              </head>
+              <body>
+                <h3>Report Generation Failed &mdash; Retry in Progress</h3>
+                <p>
+                  Your scheduled report
+                  <b>{nh3.clean(self._content.name, tags=set(), attributes={})}</b>
+                  encountered an error during generation.
+                  The system is automatically retrying.
+                </p>
+                <p><b>Retry attempt:</b> {attempt} of {max_attempts}
+                   &nbsp;&nbsp; <b>Retries remaining:</b> {retries_remaining}</p>
+                <p><b>Error details:</b> {safe_text}</p>
+                {cta_tag}
+              </body>
+            </html>
+            """
+        )
+
+    def _final_failure_template(self, text: str) -> str:
+        """HTML body for the final-failure email after all retries are exhausted."""
+        # pylint: disable=no-member
+        safe_text = nh3.clean(text, tags=set(), attributes={})
+        cta_tag = self._render_call_to_action_paragraph()
+        max_attempts = self._content.retry_max_attempts
+
+        return textwrap.dedent(
+            f"""
+            <html>
+              <head>
+                <style type="text/css">
+                  table, th, td {{
+                    border-collapse: collapse;
+                    border-color: rgb(200, 212, 227);
+                    color: rgb(42, 63, 95);
+                    padding: 4px 8px;
+                  }}
+                </style>
+              </head>
+              <body>
+                <h3>Report Generation Failed</h3>
+                <p>
+                  Your scheduled report
+                  <b>{nh3.clean(self._content.name, tags=set(), attributes={})}</b>
+                  failed to generate after <b>{max_attempts}</b> retry attempts.
+                </p>
+                <p><b>Error details:</b> {safe_text}</p>
+                <h4>What happened</h4>
+                <p>
+                  The system automatically retried {max_attempts} times, but was
+                  unable to successfully generate all charts in this report.
+                </p>
+                <h4>Next steps</h4>
+                <ul>
+                  <li>Review the error details above to identify the issue</li>
+                  <li>Check your data source connections and filters</li>
+                  <li>Verify that all charts are properly configured</li>
+                  <li>Try generating the report manually to troubleshoot</li>
+                  <li>Contact support if the issue persists</li>
+                </ul>
+                {cta_tag}
+              </body>
+            </html>
+            """
         )
 
     def _get_content(self) -> EmailContent:
+        if self._content.text and self._content.retry_attempt is not None:
+            return EmailContent(
+                body=self._retry_error_template(self._content.text),
+                header_data=self._content.header_data,
+            )
+        if self._content.text and self._content.retry_max_attempts is not None:
+            return EmailContent(
+                body=self._final_failure_template(self._content.text),
+                header_data=self._content.header_data,
+            )
         if self._content.text:
             return EmailContent(body=self._error_template(self._content.text))
         # Get the domain from the 'From' address ..
@@ -199,6 +360,9 @@ class EmailNotification(BaseNotification):  # pylint: disable=too-few-public-met
             attributes=ALLOWED_ATTRIBUTES,
         )
 
+        # Rewrite external links to go through the redirect warning page
+        description = process_html_links(description)
+
         # Strip malicious HTML from embedded data, allowing only table elements
         if self._content.embedded_data is not None:
             df = self._content.embedded_data
@@ -210,8 +374,10 @@ class EmailNotification(BaseNotification):  # pylint: disable=too-few-public-met
                 tags=TABLE_TAGS,
                 attributes=ALLOWED_TABLE_ATTRIBUTES,
             )
+            html_table = process_html_links(html_table)
         else:
             html_table = ""
+
 
         img_tags = []
         for msgid in images.keys():
@@ -222,7 +388,7 @@ class EmailNotification(BaseNotification):  # pylint: disable=too-few-public-met
                 """
             )
         img_tag = "".join(img_tags)
-        call_to_action = self._get_call_to_action()
+        call_to_action_tag = self._render_call_to_action_tag()
         body = textwrap.dedent(
             f"""
             <html>
@@ -243,38 +409,65 @@ class EmailNotification(BaseNotification):  # pylint: disable=too-few-public-met
               <body>
                 <div>{description}</div>
                 <br>
-                <b><a href="{self._content.url}">{call_to_action}</a></b><p></p>
+                {call_to_action_tag}
                 {html_table}
                 {img_tag}
               </body>
             </html>
             """
         )
-        csv_data = None
+        # CSV and Excel are mutually exclusive (a report has a single format),
+        # so at most one tabular attachment is present in the data dict.
+        attachment_data: dict[str, bytes | str] | None = None
         if self._content.csv:
-            # Use custom CSV filename if provided, otherwise use the default name
-            csv_name = self._content.csv_filename or __(
-                "%(name)s.csv", name=self._content.name
-            )
-            # Replace date placeholders in CSV filename
-            csv_name = replace_date_placeholders(csv_name)
-            csv_data = {csv_name: self._content.csv}
+            extension = _get_csv_attachment_extension(self._content.csv)
+            csv_name = self._content.csv_filename
+            if csv_name:
+                csv_name = replace_date_placeholders(csv_name)
+            else:
+                csv_name = __(
+                    "%(name)s.%(extension)s",
+                    name=self._name,
+                    extension=extension,
+                )
+            attachment_data = {csv_name: self._content.csv}
+        elif self._content.xlsx:
+            extension = _get_xlsx_attachment_extension(self._content.xlsx)
+            attachment_data = {
+                __(
+                    "%(name)s.%(extension)s",
+                    name=self._name,
+                    extension=extension,
+                ): self._content.xlsx
+            }
 
         pdf_data = None
         if self._content.pdf:
-            pdf_data = {__("%(name)s.pdf", name=self._content.name): self._content.pdf}
+            pdf_data = {__("%(name)s.pdf", name=self._name): self._content.pdf}
 
         return EmailContent(
             body=body,
             images=images,
             pdf=pdf_data,
-            data=csv_data,
+            data=attachment_data,
             header_data=self._content.header_data,
         )
 
     def _get_subject(self) -> str:
+        if self._content.retry_attempt is not None:
+            return __(
+                "Report Retry [%(attempt)s of %(max)s]: %(name)s",
+                attempt=self._content.retry_attempt,
+                max=self._content.retry_max_attempts,
+                name=self._name,
+            )
+        if self._content.text and self._content.retry_max_attempts is not None:
+            # Final-failure notification (retry_attempt is None but max is set)
+            return __(
+                "Report Failed - All Retries Exhausted: %(name)s",
+                name=self._name,
+            )
         if self._content.email_subject:
-            # Use custom email subject with date placeholder replacement
             subject = replace_date_placeholders(self._content.email_subject)
             return __(
                 "%(prefix)s %(title)s",
@@ -284,7 +477,7 @@ class EmailNotification(BaseNotification):  # pylint: disable=too-few-public-met
         return __(
             "%(prefix)s %(title)s",
             prefix=current_app.config["EMAIL_REPORTS_SUBJECT_PREFIX"],
-            title=self._content.name,
+            title=self._name,
         )
 
     def _parse_name(self, name: str) -> str:
@@ -295,21 +488,57 @@ class EmailNotification(BaseNotification):  # pylint: disable=too-few-public-met
         return self.now.strftime(name)
 
     def _get_call_to_action(self) -> str:
-        email_address_list = recipients_string_to_list(self._get_to())
-        for email_address in email_address_list:
-            if INTERNAL_EMAIL_DOMAIN not in email_address:
-                return ""
-        return __(current_app.config["EMAIL_REPORTS_CTA"])
+        call_to_action = __(current_app.config["EMAIL_REPORTS_CTA"])
+        recipient_targets = (
+            self._get_to() or "",
+            self._get_cc() or "",
+            self._get_bcc() or "",
+        )
+        if not any(target.strip() for target in recipient_targets):
+            return call_to_action
+
+        recipients = [
+            address
+            for target in recipient_targets
+            if target.strip()
+            for _, address in getaddresses([target.replace(";", ",")])
+        ]
+        if not recipients or any(
+            not address
+            or "@" not in address
+            or address.rsplit("@", 1)[1].casefold() != INTERNAL_EMAIL_DOMAIN
+            for address in recipients
+        ):
+            return ""
+        return call_to_action
+
+    def _render_call_to_action_tag(self) -> str:
+        """Anchor markup for the call-to-action link, or "" when disabled."""
+        if not self._content.include_cta:
+            return ""
+        call_to_action = self._get_call_to_action()
+        if not call_to_action:
+            return ""
+        return f'<b><a href="{self._content.url}">{call_to_action}</a></b><p></p>'
+
+    def _render_call_to_action_paragraph(self) -> str:
+        """CTA link wrapped in a paragraph, or "" when disabled."""
+        if not self._content.include_cta:
+            return ""
+        call_to_action = self._get_call_to_action()
+        if not call_to_action:
+            return ""
+        return f'<p><b><a href="{self._content.url}">{call_to_action}</a></b></p>'
 
     def _get_to(self) -> str:
         return json.loads(self._recipient.recipient_config_json)["target"]
 
     def _get_cc(self) -> str:
-        # To accomadate backward compatability
+        # To accommodate backward compatibility
         return json.loads(self._recipient.recipient_config_json).get("ccTarget", "")
 
     def _get_bcc(self) -> str:
-        # To accomadate backward compatability
+        # To accommodate backward compatibility
         return json.loads(self._recipient.recipient_config_json).get("bccTarget", "")
 
     @statsd_gauge("reports.email.send")
@@ -320,9 +549,8 @@ class EmailNotification(BaseNotification):  # pylint: disable=too-few-public-met
         cc = self._get_cc()
         bcc = self._get_bcc()
         from_address = self._content.email_from
-
         logger.info(
-            "Sending email with from_address=%s (default would be %s)",
+            "Sending report email from %s (default would be %s)",
             from_address,
             current_app.config["SMTP_MAIL_FROM"],
         )
@@ -345,7 +573,10 @@ class EmailNotification(BaseNotification):  # pylint: disable=too-few-public-met
                 from_address=from_address,
             )
             logger.info(
-                "Report sent to email, notification content is %s",
+                "Report sent to email, task_id: %s, notification content is %s",
+                content.header_data.get("execution_id")
+                if content.header_data
+                else None,
                 content.header_data,
             )
         except SupersetErrorsException as ex:

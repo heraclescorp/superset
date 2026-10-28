@@ -26,9 +26,12 @@
  */
 
 import { createRef, useMemo } from 'react';
-import { formatNumber, styled, t } from '@superset-ui/core';
+import type { ReactNode } from 'react';
+import { formatNumber } from '@superset-ui/core';
+import { styled } from '@apache-superset/core/theme';
+import { t } from '@apache-superset/core/translation';
 import cdf from '@stdlib/stats-base-dists-normal-cdf';
-import { AvenABChartProps, AvenABChartStylesProps } from './types';
+import type { AvenABChartProps, AvenABChartStylesProps } from './types';
 import { TableView } from '@superset-ui/core/components';
 import sortNumericValues from '../../../src/utils/sortNumericValues';
 import SparklineCell from '../../../src/visualizations/TimeTable/components/SparklineCell';
@@ -184,7 +187,7 @@ const TimeTableStyles = styled.div<AvenABChartStylesProps>`
 
 const renderSparklineCell = (
   sparkData: (number | null)[],
-  tooltip: React.ReactNode[],
+  tooltip: ReactNode[],
   timestamps: { time: string }[],
 ) => (
   <SparklineCell
@@ -295,9 +298,9 @@ function getDelta(
   test: any[],
   numeratorMetric: string,
   denominatorMetric: string,
-): { numbers: (number | null)[]; tooltip: React.ReactNode[] } {
+): { numbers: (number | null)[]; tooltip: ReactNode[] } {
   const retNumbers: (number | null)[] = [];
-  const retElements: React.ReactNode[] = [];
+  const retElements: ReactNode[] = [];
 
   // eslint-disable-next-line no-plusplus
   for (let i = 0; i < control.length; i++) {
@@ -532,7 +535,7 @@ export default function AvenABChart(props: AvenABChartProps) {
   );
 
   const timestamps = allTimestamps.map(v => ({
-    time: (new Date(v)).toISOString(),
+    time: new Date(v).toISOString(),
   }));
 
   const rows = [];

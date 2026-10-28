@@ -16,6 +16,7 @@
 # under the License.
 from datetime import datetime
 from unittest.mock import MagicMock, patch
+from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
 import pytest
@@ -49,10 +50,13 @@ def test_report_for_dashboard_with_tabs(
 ) -> None:
     dashboard_screenshot_mock.get_screenshot.return_value = b"test-image"
     current_app.config["ALERT_REPORTS_NOTIFICATION_DRY_RUN"] = False
-
     with create_dashboard_report(
         dashboard=tabbed_dashboard,
-        extra={"dashboard": {"active_tabs": ["TAB-L1B", "TAB-L2BB"]}},
+        extra={
+            "anchor": "TAB-L1B",
+            "activeTabs": ["TAB-L1B", "TAB-L2BB"],
+            "urlParams": [["native_filters", "()"]],
+        },
         name="test report tabbed dashboard",
     ) as report_schedule:
         dashboard: Dashboard = report_schedule.dashboard
@@ -61,10 +65,14 @@ def test_report_for_dashboard_with_tabs(
         ).run()
         dashboard_state = report_schedule.extra.get("dashboard", {})
         permalink_key = CreateDashboardPermalinkCommand(
-            str(dashboard.id), dashboard_state
+            str(dashboard.uuid), dashboard_state
         ).run()
 
-        expected_url = get_url_path("Superset.dashboard_permalink", key=permalink_key)
+        expected_url = get_url_path(
+            "Superset.dashboard_permalink",
+            key=permalink_key,
+            force="false",
+        )
 
         assert dashboard_screenshot_mock.call_count == 1
         called_url = dashboard_screenshot_mock.call_args.args[0]
@@ -92,7 +100,11 @@ def test_report_with_header_data(
 
     with create_dashboard_report(
         dashboard=tabbed_dashboard,
-        extra={"dashboard": {"active_tabs": ["TAB-L1B", "TAB-L2BB"]}},
+        extra={
+            "anchor": "TAB-L1B",
+            "activeTabs": ["TAB-L1B", "TAB-L2BB"],
+            "urlParams": [["native_filters", "()"]],
+        },
         name="test report tabbed dashboard",
     ) as report_schedule:
         dashboard: Dashboard = report_schedule.dashboard
@@ -107,7 +119,9 @@ def test_report_with_header_data(
         assert dashboard_screenshot_mock.call_count == 1
         url = dashboard_screenshot_mock.call_args.args[0]
 
-        assert url.endswith(f"/superset/dashboard/p/{permalink_key}/")
+        parsed_url = urlparse(url)
+        assert parsed_url.path.endswith(f"/dashboard/p/{permalink_key}/")
+        assert parse_qs(parsed_url.query).get("force") == ["false"]
         assert send_email_smtp_mock.call_count == 1
         header_data = send_email_smtp_mock.call_args.kwargs["header_data"]
         assert header_data.get("dashboard_id") == dashboard.id

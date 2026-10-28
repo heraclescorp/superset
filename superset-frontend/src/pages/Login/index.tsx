@@ -17,7 +17,9 @@
  * under the License.
  */
 
-import { SupersetClient, styled, t, css } from '@superset-ui/core';
+import { t } from '@apache-superset/core/translation';
+import { SupersetClient } from '@superset-ui/core';
+import { styled, css } from '@apache-superset/core/theme';
 import {
   Button,
   Card,
@@ -27,9 +29,17 @@ import {
   Typography,
   Icons,
 } from '@superset-ui/core/components';
-import { useState, useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { capitalize } from 'lodash/fp';
+import {
+  addDangerToast,
+  addInfoToast,
+  addSuccessToast,
+  addWarningToast,
+} from 'src/components/MessageToasts/actions';
+import { useDispatch } from 'react-redux';
 import getBootstrapData from 'src/utils/getBootstrapData';
+import { ensureAppRoot } from 'src/utils/navigationUtils';
 
 type OAuthProvider = {
   name: string;
@@ -53,6 +63,7 @@ enum AuthType {
   AuthDB = 1,
   AuthLDAP = 2,
   AuthOauth = 4,
+  AuthSAML = 5,
 }
 
 const StyledCard = styled(Card)`
@@ -77,6 +88,7 @@ const StyledLabel = styled(Typography.Text)`
 export default function Login() {
   const [form] = Form.useForm<LoginForm>();
   const [loading, setLoading] = useState(false);
+  const dispatch = useDispatch();
 
   const bootstrapData = getBootstrapData();
   const nextUrl = useMemo(() => {
@@ -89,15 +101,18 @@ export default function Login() {
   }, []);
 
   const loginEndpoint = useMemo(
-    () => (nextUrl ? `/login/?next=${encodeURIComponent(nextUrl)}` : '/login/'),
+    () =>
+      ensureAppRoot(
+        nextUrl ? `/login/?next=${encodeURIComponent(nextUrl)}` : '/login/',
+      ),
     [nextUrl],
   );
 
   const buildProviderLoginUrl = (providerName: string) => {
-    const base = `/login/${providerName}`;
-    return nextUrl
-      ? `${base}${base.includes('?') ? '&' : '?'}next=${encodeURIComponent(nextUrl)}`
-      : base;
+    const base = `/login/${encodeURIComponent(providerName)}`;
+    return ensureAppRoot(
+      nextUrl ? `${base}?next=${encodeURIComponent(nextUrl)}` : base,
+    );
   };
 
   const authType: AuthType = bootstrapData.common.conf.AUTH_TYPE;
@@ -105,11 +120,34 @@ export default function Login() {
   const authRegistration: boolean =
     bootstrapData.common.conf.AUTH_USER_REGISTRATION;
 
+  // Flashed auth messages (failed logins, session invalidation, forced
+  // password change) are drained by the login view into the bootstrap
+  // payload - surface them here, once, on mount.
+  const authMessages = bootstrapData.auth_messages ?? [];
+  useEffect(() => {
+    authMessages.forEach(([category, message]) => {
+      if (category === 'success') {
+        dispatch(addSuccessToast(message));
+      } else if (category === 'info' || category === 'message') {
+        dispatch(addInfoToast(message));
+      } else if (category === 'warning') {
+        dispatch(addWarningToast(message));
+      } else {
+        dispatch(addDangerToast(message));
+      }
+      // Clear the password field on auth failures, independent of toast color
+      if (['warning', 'danger', 'error'].includes(category)) {
+        form.setFieldsValue({ password: '' });
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dispatch, form]);
+
   const onFinish = (values: LoginForm) => {
     setLoading(true);
-    SupersetClient.postForm(loginEndpoint, values, '').finally(() => {
-      setLoading(false);
-    });
+
+    // Use standard form submission for Flask-AppBuilder compatibility
+    SupersetClient.postForm(ensureAppRoot(loginEndpoint), values, '');
   };
 
   const getAuthIconElement = (
@@ -158,7 +196,8 @@ export default function Login() {
             </Form>
           </Flex>
         )}
-        {authType === AuthType.AuthOauth && (
+        {(authType === AuthType.AuthOauth ||
+          authType === AuthType.AuthSAML) && (
           <Flex justify="center" gap={0} vertical>
             <Form layout="vertical" requiredMark="optional" form={form}>
               {providers.map((provider: OAuthProvider) => (
@@ -228,11 +267,13 @@ export default function Login() {
                   >
                     {t('Sign in')}
                   </Button>
-                  {authRegistration && (
+                  {/* LDAP deployments enable AUTH_USER_REGISTRATION for
+                  first-login provisioning, not for self-registration. */}
+                  {authRegistration && authType === AuthType.AuthDB && (
                     <Button
                       block
                       type="default"
-                      href="/register/"
+                      href={ensureAppRoot('/register/')}
                       data-test="register-button"
                     >
                       {t('Register')}

@@ -30,7 +30,7 @@ from typing import Any
 
 from alembic import op
 from sqlalchemy import Column, Integer, or_, String, Text
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import declarative_base
 
 from superset import db
 from superset.migrations.shared.utils import paginated_update
@@ -113,8 +113,9 @@ def upgrade():
         except Exception as ex:
             session.rollback()
             logger.exception(
-                f"An error occurred: Upgrading params for slice {slc.id} failed."
-                f"You need to fix it before upgrading your DB."
+                "An error occurred: Upgrading params for slice %s failed."
+                "You need to fix it before upgrading your DB.",
+                slc.id,
             )
             raise Exception(f"An error occurred while upgrading slice: {ex}") from ex
 
@@ -213,8 +214,9 @@ def downgrade():
         except Exception as ex:
             session.rollback()
             logger.exception(
-                f"An error occurred: Downgrading params for slice {slc.id} failed."
-                f"You need to fix it before downgrading your DB."
+                "An error occurred: Downgrading params for slice %s failed."
+                "You need to fix it before downgrading your DB.",
+                slc.id,
             )
             raise Exception(f"An error occurred while downgrading slice: {ex}") from ex
 

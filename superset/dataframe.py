@@ -37,6 +37,16 @@ def _convert_big_integers(val: Any) -> Any:
     return str(val) if isinstance(val, int) and abs(val) > JS_MAX_INTEGER else val
 
 
+def _is_na(val: Any) -> bool:
+    """
+    Check if a scalar value is NA/NaN/NaT, leaving collections unchanged.
+
+    :param val: the value to check
+    :returns: True if the value is NA/NaN, False otherwise
+    """
+    return pd.api.types.is_scalar(val) and bool(pd.isna(val))
+
+
 def df_to_records(dframe: pd.DataFrame) -> list[dict[str, Any]]:
     """
     Convert a DataFrame to a set of records.
@@ -56,7 +66,7 @@ def df_to_records(dframe: pd.DataFrame) -> list[dict[str, Any]]:
     for record in records:
         for key in record:
             record[key] = (
-                None if pd.isna(record[key]) else _convert_big_integers(record[key])
+                None if _is_na(record[key]) else _convert_big_integers(record[key])
             )
 
     return records

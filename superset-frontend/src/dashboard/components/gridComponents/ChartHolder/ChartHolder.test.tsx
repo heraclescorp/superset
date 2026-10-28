@@ -20,7 +20,6 @@
 import { combineReducers, createStore, applyMiddleware, compose } from 'redux';
 import { Provider } from 'react-redux';
 import thunk from 'redux-thunk';
-import sinon from 'sinon';
 import mockState from 'spec/fixtures/mockState';
 import reducerIndex from 'spec/helpers/reducerIndex';
 import { sliceId as chartId } from 'spec/fixtures/mockChartQueries';
@@ -36,15 +35,24 @@ import newComponentFactory from 'src/dashboard/util/newComponentFactory';
 import { initialState } from 'src/SqlLab/fixtures';
 import { SET_DIRECT_PATH } from 'src/dashboard/actions/dashboardState';
 import {
+  enableMobileConsumptionFlag,
+  mockMobileMatchMedia,
+} from 'spec/helpers/mobileTestUtils';
+import {
   CHART_TYPE,
   COLUMN_TYPE,
   ROW_TYPE,
 } from '../../../util/componentTypes';
-import ChartHolder, { CHART_MARGIN } from './ChartHolder';
-import { GRID_BASE_UNIT, GRID_GUTTER_SIZE } from '../../../util/constants';
+import ChartHolder, { CHART_MARGIN, MOBILE_CHROME_HEIGHT } from './ChartHolder';
+import {
+  GRID_BASE_UNIT,
+  GRID_GUTTER_SIZE,
+  GRID_MIN_ROW_UNITS,
+} from '../../../util/constants';
 
 const DEFAULT_HEADER_HEIGHT = 22;
 
+// eslint-disable-next-line no-restricted-globals -- TODO: Migrate from describe blocks
 describe('ChartHolder', () => {
   let scrollViewBase: any;
 
@@ -110,7 +118,7 @@ describe('ChartHolder', () => {
       store,
     });
 
-  it('should render empty state', async () => {
+  test('should render empty state', async () => {
     renderWrapper();
 
     expect(
@@ -124,7 +132,7 @@ describe('ChartHolder', () => {
     expect(screen.getByRole('img', { name: 'empty' })).toBeVisible();
   });
 
-  it('should render anchor link when not editing', async () => {
+  test('should render anchor link when not editing', async () => {
     const store = createMockStore();
     const { rerender } = renderWrapper(store, { editMode: false });
 
@@ -155,7 +163,7 @@ describe('ChartHolder', () => {
     ).toEqual(0);
   });
 
-  it('should highlight when path matches', async () => {
+  test('should highlight when path matches', async () => {
     const store = createMockStore({
       dashboardState: {
         ...mockState.dashboardState,
@@ -202,7 +210,7 @@ describe('ChartHolder', () => {
     );
   });
 
-  it('should calculate the default widthMultiple', async () => {
+  test('should calculate the default widthMultiple', async () => {
     const widthMultiple = 5;
     renderWrapper(createMockStore(), {
       editMode: true,
@@ -231,7 +239,7 @@ describe('ChartHolder', () => {
     expect(computedWidth).toEqual(`${expectedWidth}px`);
   });
 
-  it('should set the resizable width to auto when parent component type is column', async () => {
+  test('should set the resizable width to auto when parent component type is column', async () => {
     renderWrapper(createMockStore(), {
       editMode: true,
       parentComponent: {
@@ -255,7 +263,7 @@ describe('ChartHolder', () => {
     expect(computedWidth).toEqual('auto');
   });
 
-  it("should override the widthMultiple if there's a column in the parent chain whose width is less than the chart", async () => {
+  test("should override the widthMultiple if there's a column in the parent chain whose width is less than the chart", async () => {
     const widthMultiple = 10;
     const parentColumnWidth = 6;
     renderWrapper(createMockStore(), {
@@ -288,7 +296,7 @@ describe('ChartHolder', () => {
     expect(computedWidth).toEqual(`${expectedWidth}px`);
   });
 
-  it('should calculate the chartWidth', async () => {
+  test('should calculate the chartWidth', async () => {
     const widthMultiple = 7;
     const columnWidth = 250;
     renderWrapper(createMockStore(), {
@@ -319,7 +327,7 @@ describe('ChartHolder', () => {
     expect(computedWidth).toEqual(expectedWidth);
   });
 
-  it('should calculate the chartWidth on full screen mode', async () => {
+  test('should calculate the chartWidth on full screen mode', async () => {
     const widthMultiple = 7;
     const columnWidth = 250;
     renderWrapper(createMockStore(), {
@@ -345,7 +353,7 @@ describe('ChartHolder', () => {
     expect(computedWidth).toEqual(expectedWidth);
   });
 
-  it('should calculate the chartHeight', async () => {
+  test('should calculate the chartHeight', async () => {
     const heightMultiple = 12;
     renderWrapper(createMockStore(), {
       fullSizeChartId: null,
@@ -372,7 +380,7 @@ describe('ChartHolder', () => {
     expect(computedWidth).toEqual(expectedWidth);
   });
 
-  it('should calculate the chartHeight on full screen mode', async () => {
+  test('should calculate the chartHeight on full screen mode', async () => {
     const heightMultiple = 12;
     renderWrapper(createMockStore(), {
       component: {
@@ -397,8 +405,143 @@ describe('ChartHolder', () => {
     expect(computedWidth).toEqual(expectedWidth);
   });
 
-  it('should call deleteComponent when deleted', async () => {
-    const deleteComponent = sinon.spy();
+  // eslint-disable-next-line no-restricted-globals -- TODO: Migrate from describe blocks
+  describe('mobile consumption mode height capping', () => {
+    let restoreMatchMedia: () => void;
+    let restoreFlag: () => void;
+    let originalInnerHeight: number;
+
+    beforeEach(() => {
+      restoreMatchMedia = mockMobileMatchMedia();
+      restoreFlag = enableMobileConsumptionFlag();
+      originalInnerHeight = window.innerHeight;
+    });
+
+    afterEach(() => {
+      restoreMatchMedia();
+      restoreFlag();
+      Object.defineProperty(window, 'innerHeight', {
+        writable: true,
+        configurable: true,
+        value: originalInnerHeight,
+      });
+    });
+
+    test('caps an authored height taller than the viewport to fit within it', async () => {
+      Object.defineProperty(window, 'innerHeight', {
+        writable: true,
+        configurable: true,
+        value: 812,
+      });
+      const authoredHeight = 200;
+
+      renderWrapper(createMockStore(), {
+        fullSizeChartId: null,
+        editMode: false,
+        component: {
+          ...defaultProps.component,
+          meta: {
+            ...defaultProps.component.meta,
+            height: authoredHeight,
+          },
+        },
+      });
+
+      const container = screen.getByTestId('chart-container');
+      const computedHeight = parseInt(
+        container.getAttribute('height') || '0',
+        10,
+      );
+
+      const maxUnits = Math.floor(
+        (812 - MOBILE_CHROME_HEIGHT) / GRID_BASE_UNIT,
+      );
+      const cappedHeightMultiple = Math.min(authoredHeight, maxUnits);
+      const expectedHeight = Math.floor(
+        cappedHeightMultiple * GRID_BASE_UNIT -
+          CHART_MARGIN -
+          DEFAULT_HEADER_HEIGHT,
+      );
+
+      expect(cappedHeightMultiple).toBeLessThan(authoredHeight);
+      expect(computedHeight).toEqual(expectedHeight);
+    });
+
+    test('floors the capped height at GRID_MIN_ROW_UNITS on very short viewports', async () => {
+      Object.defineProperty(window, 'innerHeight', {
+        writable: true,
+        configurable: true,
+        value: 200,
+      });
+      const authoredHeight = 200;
+
+      renderWrapper(createMockStore(), {
+        fullSizeChartId: null,
+        editMode: false,
+        component: {
+          ...defaultProps.component,
+          meta: {
+            ...defaultProps.component.meta,
+            height: authoredHeight,
+          },
+        },
+      });
+
+      const container = screen.getByTestId('chart-container');
+      const computedHeight = parseInt(
+        container.getAttribute('height') || '0',
+        10,
+      );
+
+      // The rendered chart further clamps to a 20px floor of its own, which
+      // kicks in here since the grid-unit floor alone would compute negative.
+      const expectedHeight = Math.max(
+        Math.floor(
+          GRID_MIN_ROW_UNITS * GRID_BASE_UNIT -
+            CHART_MARGIN -
+            DEFAULT_HEADER_HEIGHT,
+        ),
+        20,
+      );
+
+      expect(computedHeight).toEqual(expectedHeight);
+    });
+
+    test('does not cap the authored height while in edit mode', async () => {
+      Object.defineProperty(window, 'innerHeight', {
+        writable: true,
+        configurable: true,
+        value: 812,
+      });
+      const authoredHeight = 200;
+
+      renderWrapper(createMockStore(), {
+        fullSizeChartId: null,
+        editMode: true,
+        component: {
+          ...defaultProps.component,
+          meta: {
+            ...defaultProps.component.meta,
+            height: authoredHeight,
+          },
+        },
+      });
+
+      const container = screen.getByTestId('chart-container');
+      const computedHeight = parseInt(
+        container.getAttribute('height') || '0',
+        10,
+      );
+      const expectedHeight = Math.floor(
+        authoredHeight * GRID_BASE_UNIT - CHART_MARGIN - DEFAULT_HEADER_HEIGHT,
+      );
+
+      expect(computedHeight).toEqual(expectedHeight);
+    });
+  });
+
+  test('should call deleteComponent when deleted', async () => {
+    const deleteComponent = jest.fn();
     const store = createMockStore();
     const { rerender } = renderWrapper(store, {
       editMode: false,
@@ -432,6 +575,6 @@ describe('ChartHolder', () => {
       screen.getByTestId('dashboard-delete-component-button')
         .firstElementChild!,
     );
-    expect(deleteComponent.callCount).toBe(1);
+    expect(deleteComponent).toHaveBeenCalledTimes(1);
   });
 });

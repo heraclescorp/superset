@@ -135,7 +135,6 @@ class AvenRestApi(BaseSupersetModelRestApi):
 
             chart_df = pd.DataFrame(chart_data)
 
-            logger.info(chart_df)
             chart_dfs.append((chart.slice_name, chart_df))
 
             event_info = {
@@ -265,7 +264,6 @@ class AvenRestApi(BaseSupersetModelRestApi):
 
                 chart_df = pd.DataFrame(chart_data)
 
-                logger.info(chart_df)
                 chart_dfs.append((chart.slice_name, chart_df))
 
                 event_info = {

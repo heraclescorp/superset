@@ -16,7 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { ChartProps, TimeseriesDataRecord } from '@superset-ui/core';
+import type { ChartProps, TimeseriesDataRecord } from '@superset-ui/core';
 
 function buildCumulativeArray(
   data: TimeseriesDataRecord[],

@@ -16,7 +16,8 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { logging, t } from '@superset-ui/core';
+import { logging } from '@apache-superset/core/utils';
+import { t } from '@apache-superset/core/translation';
 import { useCallback, useEffect } from 'react';
 import { useDispatch } from 'react-redux';
 import { useParams } from 'react-router-dom';
@@ -28,7 +29,7 @@ import {
 import { getExportGoogleSheetsUrl } from '../../dashboard/util/exportToGoogleSheet';
 
 export default function ExportGoogleSheets() {
-  const { dashboardId }: any = useParams();
+  const { dashboardId } = useParams<{ dashboardId: string }>();
   const dispatch = useDispatch();
 
   const handleGoogleSheetsExport = useCallback(async () => {

@@ -1,7 +1,7 @@
 import { SupersetClient } from '@superset-ui/core';
 
 export async function getExportGoogleSheetsUrl(
-  dashboardId: number,
+  dashboardId: number | string,
 ): Promise<string> {
   const res = await SupersetClient.get({
     endpoint: `/api/v1/aven/${dashboardId}/export/dashboard_to_google_sheet`,
@@ -11,7 +11,7 @@ export async function getExportGoogleSheetsUrl(
 }
 
 export async function getExportSliceToGoogleSheetsUrl(
-  sliceId: number,
+  sliceId: number | string,
 ): Promise<string> {
   const res = await SupersetClient.get({
     endpoint: `/api/v1/aven/${sliceId}/export/chart_to_google_sheet`,

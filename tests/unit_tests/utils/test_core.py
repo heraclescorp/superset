@@ -28,17 +28,22 @@ from pytest_mock import MockerFixture
 
 from superset.exceptions import SupersetException
 from superset.utils.core import (
+    build_email_attachment,
     cast_to_boolean,
+    cast_to_num,
     check_is_safe_zip,
     DateColumn,
+    extract_dataframe_dtypes,
     FilterOperator,
     generic_find_constraint_name,
     generic_find_fk_constraint_name,
+    generic_find_uq_constraint_name,
     get_datasource_full_name,
     get_query_source_from_request,
     get_stacktrace,
     get_user_agent,
     is_test,
+    markdown,
     merge_extra_filters,
     merge_extra_form_data,
     merge_request_params,
@@ -48,6 +53,9 @@ from superset.utils.core import (
     QueryObjectFilterClause,
     QuerySource,
     remove_extra_adhoc_filters,
+    sanitize_cookie_token,
+    sanitize_svg_content,
+    sanitize_url,
 )
 from tests.conftest import with_config
 
@@ -63,6 +71,43 @@ EXTRA_FILTER: QueryObjectFilterClause = {
     "val": "bar",
     "isExtra": True,
 }
+
+
+@pytest.mark.parametrize(
+    ("name", "body", "expected_payload", "content_type"),
+    [
+        (
+            "report.xlsx",
+            b"attachment",
+            b"attachment",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ),
+        (
+            "report.zip",
+            "архив".encode("utf-8"),
+            "архив".encode("utf-8"),
+            "application/zip",
+        ),
+        (
+            "report.csv",
+            "город,value\nМосква,1",
+            "город,value\nМосква,1".encode("utf-8"),
+            "application/octet-stream",
+        ),
+    ],
+)
+def test_build_email_attachment(
+    name: str,
+    body: bytes | str,
+    expected_payload: bytes,
+    content_type: str,
+) -> None:
+    """Email attachments should expose the expected MIME type and filename."""
+    attachment = build_email_attachment(name, body)
+
+    assert attachment.get_content_type() == content_type
+    assert attachment.get_filename() == name
+    assert attachment.get_payload(decode=True) == expected_payload
 
 
 @dataclass
@@ -203,6 +248,24 @@ def test_other_values():
     assert cast_to_boolean(object()) is False
 
 
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        ("5", 5),
+        ("5.2", 5.2),
+        (" 2", 2.0),
+        (10, 10),
+        (None, None),
+        ("this is not a string", None),
+        # ``str.isdigit()`` is true for these but ``int()`` rejects them
+        ("²", None),
+        ("①", None),
+    ],
+)
+def test_cast_to_num(value: Any, expected: Any) -> None:
+    assert cast_to_num(value) == expected
+
+
 def test_normalize_dttm_col() -> None:
     """
     Tests for the ``normalize_dttm_col`` function.
@@ -228,6 +291,22 @@ def test_normalize_dttm_col() -> None:
     normalize_dttm_col(df, dttm_cols)
 
     assert df["__time"].astype(str).tolist() == ["2017-07-01"]
+
+
+def test_normalize_dttm_col_mismatched_format_keeps_values() -> None:
+    """A datetime format that coerces every value to NaT is a mismatch (e.g. an
+    epoch-millis column that inherited a ``%Y`` string format when used as a
+    chart's granularity); applying it would silently blank the whole column, so
+    the original values are kept instead of being nulled. Regression for the
+    Samples pane showing N/A for such columns."""
+    df = pd.DataFrame({"year": [1136073600000, 473385600000]})  # epoch ms
+    before = df["year"].tolist()
+
+    normalize_dttm_col(df, (DateColumn(col_label="year", timestamp_format="%Y"),))
+
+    # not blanked to NaT/None
+    assert df["year"].notna().all()
+    assert df["year"].tolist() == before
 
 
 def test_normalize_dttm_col_epoch_seconds() -> None:
@@ -300,6 +379,46 @@ def test_normalize_dttm_col_with_offset() -> None:
     assert df["date_col"][2].strftime("%Y-%m-%d %H:%M:%S") == "2022-01-01 03:00:00"
 
 
+def test_normalize_dttm_col_second_precision_no_offset_matches_source() -> None:
+    """Regression test for #37925: second-precision timestamps with no
+    dataset offset configured ("UTC", i.e. offset=0) and no time shift must
+    pass through ``normalize_dttm_col`` unchanged and identically to their
+    source values, with no per-row drift.
+
+    The issue reports charts showing datetimes shifted by inconsistent,
+    non-uniform amounts versus the same data in SQL Lab, with the reporter's
+    own examples showing each shift exactly equal to that row's own
+    time-of-day (e.g. 16:30:00 shifted by +16h30m, 10:00:00 by +10h,
+    14:20:00 by +14h20m). ``normalize_dttm_col`` applies a single
+    ``_col.offset``/``_col.time_shift`` uniformly via ``timedelta(...)`` to
+    the whole column (see ``test_normalize_dttm_col_with_offset`` above,
+    already green), which cannot structurally produce a shift that varies
+    per row based on that row's own value, so this function is not the
+    mechanism the issue describes. This test locks in the specific
+    reported config (offset=0, no time_shift, second-level grain, multiple
+    distinct timestamps) end to end to make that explicit.
+    """
+    source_values = [
+        "2026-02-15 16:30:00",
+        "2026-02-15 10:00:00",
+        "2026-02-11 14:20:00",
+    ]
+    df = pd.DataFrame({"dttm": source_values})
+    dttm_cols = (
+        DateColumn(
+            col_label="dttm",
+            timestamp_format="%Y-%m-%d %H:%M:%S",
+            offset=0,
+            time_shift=None,
+        ),
+    )
+
+    normalize_dttm_col(df, dttm_cols)
+
+    assert is_datetime64_dtype(df["dttm"])
+    assert df["dttm"].dt.strftime("%Y-%m-%d %H:%M:%S").tolist() == source_values
+
+
 def test_normalize_dttm_col_with_time_shift() -> None:
     """Test with time shift."""
     df = pd.DataFrame({"date_col": ["2020-01-01", "2021-01-01", "2022-01-01"]})
@@ -335,6 +454,78 @@ def test_normalize_dttm_col_with_offset_and_time_shift() -> None:
     assert df["date_col"][0].strftime("%Y-%m-%d %H:%M:%S") == "2020-01-01 04:00:00"
     assert df["date_col"][1].strftime("%Y-%m-%d %H:%M:%S") == "2021-01-01 04:00:00"
     assert df["date_col"][2].strftime("%Y-%m-%d %H:%M:%S") == "2022-01-01 04:00:00"
+
+
+def test_normalize_dttm_col_with_timezone() -> None:
+    """UTC-stored values are converted to the dataset's configured timezone."""
+    # Winter date: Europe/Berlin is UTC+1, so 00:00 UTC renders as 01:00 local.
+    df = pd.DataFrame({"date_col": ["2020-01-01 00:00:00"]})
+    dttm_cols = (
+        DateColumn(
+            col_label="date_col",
+            timestamp_format="%Y-%m-%d %H:%M:%S",
+            timezone="Europe/Berlin",
+        ),
+    )
+
+    normalize_dttm_col(df, dttm_cols)
+
+    assert is_datetime64_dtype(df["date_col"])
+    # tz-naive after conversion (display value), shifted by the zone offset.
+    assert df["date_col"][0].tzinfo is None
+    assert df["date_col"][0].strftime("%Y-%m-%d %H:%M:%S") == "2020-01-01 01:00:00"
+
+
+def test_normalize_dttm_col_timezone_handles_dst() -> None:
+    """The timezone path respects DST, unlike a fixed hour offset."""
+    # Summer date: Europe/Berlin is UTC+2 (CEST), so 00:00 UTC renders as 02:00.
+    df = pd.DataFrame({"date_col": ["2020-07-01 00:00:00"]})
+    dttm_cols = (
+        DateColumn(
+            col_label="date_col",
+            timestamp_format="%Y-%m-%d %H:%M:%S",
+            timezone="Europe/Berlin",
+        ),
+    )
+
+    normalize_dttm_col(df, dttm_cols)
+
+    assert df["date_col"][0].strftime("%Y-%m-%d %H:%M:%S") == "2020-07-01 02:00:00"
+
+
+def test_normalize_dttm_col_timezone_takes_precedence_over_offset() -> None:
+    """When both timezone and offset are set, the timezone conversion wins."""
+    df = pd.DataFrame({"date_col": ["2020-01-01 00:00:00"]})
+    dttm_cols = (
+        DateColumn(
+            col_label="date_col",
+            timestamp_format="%Y-%m-%d %H:%M:%S",
+            timezone="Europe/Berlin",
+            offset=10,
+        ),
+    )
+
+    normalize_dttm_col(df, dttm_cols)
+
+    # +1h from the Berlin (winter) conversion, NOT +10h from the offset.
+    assert df["date_col"][0].strftime("%Y-%m-%d %H:%M:%S") == "2020-01-01 01:00:00"
+
+
+def test_normalize_dttm_col_invalid_timezone_falls_back_to_offset() -> None:
+    """An unknown timezone falls back to the plain hour offset."""
+    df = pd.DataFrame({"date_col": ["2020-01-01 00:00:00"]})
+    dttm_cols = (
+        DateColumn(
+            col_label="date_col",
+            timestamp_format="%Y-%m-%d %H:%M:%S",
+            timezone="Not/AZone",
+            offset=3,
+        ),
+    )
+
+    normalize_dttm_col(df, dttm_cols)
+
+    assert df["date_col"][0].strftime("%Y-%m-%d %H:%M:%S") == "2020-01-01 03:00:00"
 
 
 def test_normalize_dttm_col_invalid_date_coerced() -> None:
@@ -468,6 +659,30 @@ def test_check_if_safe_zip_hidden_bomb(app_context: None) -> None:
         check_is_safe_zip(ZipFile)
 
 
+def test_check_if_safe_zip_total_size(app_context: None) -> None:
+    """Total decompressed size above the threshold is rejected even when each
+    individual entry is within the per-file limit and the ratio is low."""
+    hundred_mb = 100 * 1024 * 1024
+    ZipFile = MagicMock()  # noqa: N806
+    # 11 entries x 100MB = 1.1GB total (> 1GB cap); per-file == limit, ratio 1.
+    ZipFile.infolist.return_value = [
+        MockZipInfo(file_size=hundred_mb, compress_size=hundred_mb) for _ in range(11)
+    ]
+    with pytest.raises(SupersetException):
+        check_is_safe_zip(ZipFile)
+
+
+def test_check_if_safe_zip_zero_compress_size(app_context: None) -> None:
+    """A zero compressed size must not raise ZeroDivisionError."""
+    ZipFile = MagicMock()  # noqa: N806
+    ZipFile.infolist.return_value = [
+        MockZipInfo(file_size=0, compress_size=0),
+        MockZipInfo(file_size=1000, compress_size=0),
+    ]
+    # Must complete without raising (ZeroDivisionError previously).
+    check_is_safe_zip(ZipFile)
+
+
 def test_generic_constraint_name_exists():
     # Create a mock SQLAlchemy database object
     database_mock = MagicMock()
@@ -577,6 +792,71 @@ def test_generic_find_fk_constraint_none_exist():
     assert result is None
 
 
+def test_generic_find_uq_constraint_accepts_list():
+    """Regression pin for the ``list == set`` foot-gun (sc-112173).
+
+    Migration ``df3d7e2eb9a4`` passed a list and silently never matched,
+    because the helper compared it with ``==`` against a set. The helper
+    coerces its ``columns`` argument, so a list argument MUST find the
+    constraint."""
+    insp_mock = MagicMock()
+    insp_mock.get_unique_constraints.return_value = [
+        {
+            "name": "_customer_location_uc",
+            "column_names": ["database_id", "schema", "table_name"],
+        },
+    ]
+
+    result = generic_find_uq_constraint_name(
+        "tables",
+        ["database_id", "schema", "table_name"],  # deliberately a list
+        insp_mock,
+    )
+
+    assert result == "_customer_location_uc"
+
+
+def test_generic_find_uq_constraint_with_set():
+    """The documented set-shaped argument keeps working unchanged."""
+    insp_mock = MagicMock()
+    insp_mock.get_unique_constraints.return_value = [
+        {
+            "name": "_customer_location_uc",
+            "column_names": ["database_id", "schema", "table_name"],
+        },
+    ]
+
+    result = generic_find_uq_constraint_name(
+        "tables",
+        {"database_id", "schema", "table_name"},
+        insp_mock,
+    )
+
+    assert result == "_customer_location_uc"
+
+
+def test_generic_find_uq_constraint_no_partial_match():
+    """A 3-column lookup MUST NOT match a 4-column constraint: the
+    take-2 drop migration relies on exact set equality so the model's
+    intended ``(database_id, catalog, schema, table_name)`` constraint is
+    never at risk."""
+    insp_mock = MagicMock()
+    insp_mock.get_unique_constraints.return_value = [
+        {
+            "name": "uq_tables_database_id",
+            "column_names": ["database_id", "catalog", "schema", "table_name"],
+        },
+    ]
+
+    result = generic_find_uq_constraint_name(
+        "tables",
+        {"database_id", "schema", "table_name"},
+        insp_mock,
+    )
+
+    assert result is None
+
+
 def test_get_datasource_full_name():
     """
     Test the `get_datasource_full_name` function.
@@ -609,8 +889,29 @@ def test_get_datasource_full_name():
         (None, None),
         ("https://mysuperset.com/abc", None),
         ("https://mysuperset.com/superset/dashboard/", QuerySource.DASHBOARD),
+        ("https://mysuperset.com/dashboard/1/", QuerySource.DASHBOARD),
+        ("https://mysuperset.com/myapp/dashboard/1/", QuerySource.DASHBOARD),
         ("https://mysuperset.com/explore/", QuerySource.CHART),
+        ("https://mysuperset.com/myapp/explore/", QuerySource.CHART),
         ("https://mysuperset.com/sqllab/", QuerySource.SQL_LAB),
+        ("https://mysuperset.com/myapp/sqllab/", QuerySource.SQL_LAB),
+        # Matching is path-scoped: a query-string payload embedding another
+        # route segment must not win over (or fabricate) an attribution.
+        ("https://mysuperset.com/explore/?next=/dashboard/1/", QuerySource.CHART),
+        ("https://mysuperset.com/?next=/dashboard/1/", None),
+        # Substring match is slash-bounded: a sibling route that merely shares
+        # the leading token (`/dashboardx/`, `/explorer/`) must NOT match. Pins
+        # the trailing `/` in the `"/dashboard/" in path` checks against a
+        # future loosening to a prefix/startswith compare.
+        ("https://mysuperset.com/dashboardx/", None),
+        ("https://mysuperset.com/explorer/", None),
+        ("https://mysuperset.com/sqllab_extra/", None),
+        # The bare token without a trailing slash is also not a match — the
+        # canonical routes always carry the trailing slash.
+        ("https://mysuperset.com/dashboard", None),
+        # Referer is client-controlled: a malformed URL (unclosed IPv6
+        # bracket makes urlparse raise ValueError) must yield None, not 500.
+        ("http://[/explore/", None),
     ],
 )
 def test_get_query_source_from_request(
@@ -644,8 +945,9 @@ def test_get_user_agent(mocker: MockerFixture, app_context: None) -> None:
 
 @with_config(
     {
-        "USER_AGENT_FUNC": lambda database,
-        source: f"{database.database_name} {source.name}"
+        "USER_AGENT_FUNC": lambda database, source: (
+            f"{database.database_name} {source.name}"
+        )
     }
 )
 def test_get_user_agent_custom(mocker: MockerFixture, app_context: None) -> None:
@@ -687,7 +989,9 @@ def test_merge_extra_filters():
                 "clause": "WHERE",
                 "comparator": "someval",
                 "expressionType": "SIMPLE",
-                "filterOptionName": "90cfb3c34852eb3bc741b0cc20053b46",
+                "filterOptionName": (
+                    "eb77ff8188437d8722af8c932727da1e83ec37e88aaf800a3859ed352d87119f"
+                ),
                 "isExtra": True,
                 "operator": "in",
                 "subject": "a",
@@ -696,7 +1000,9 @@ def test_merge_extra_filters():
                 "clause": "WHERE",
                 "comparator": ["c1", "c2"],
                 "expressionType": "SIMPLE",
-                "filterOptionName": "6c178d069965f1c02640661280415d96",
+                "filterOptionName": (
+                    "48dd60c7ecb8699b51e36ce956ba481aa5382548811aecec71af7e550c59762c"
+                ),
                 "isExtra": True,
                 "operator": "==",
                 "subject": "B",
@@ -735,7 +1041,9 @@ def test_merge_extra_filters():
                 "clause": "WHERE",
                 "comparator": "someval",
                 "expressionType": "SIMPLE",
-                "filterOptionName": "90cfb3c34852eb3bc741b0cc20053b46",
+                "filterOptionName": (
+                    "eb77ff8188437d8722af8c932727da1e83ec37e88aaf800a3859ed352d87119f"
+                ),
                 "isExtra": True,
                 "operator": "in",
                 "subject": "a",
@@ -744,7 +1052,9 @@ def test_merge_extra_filters():
                 "clause": "WHERE",
                 "comparator": ["c1", "c2"],
                 "expressionType": "SIMPLE",
-                "filterOptionName": "6c178d069965f1c02640661280415d96",
+                "filterOptionName": (
+                    "48dd60c7ecb8699b51e36ce956ba481aa5382548811aecec71af7e550c59762c"
+                ),
                 "isExtra": True,
                 "operator": "==",
                 "subject": "B",
@@ -769,7 +1079,9 @@ def test_merge_extra_filters():
                 "clause": "WHERE",
                 "comparator": "hello",
                 "expressionType": "SIMPLE",
-                "filterOptionName": "e3cbdd92a2ae23ca92c6d7fca42e36a6",
+                "filterOptionName": (
+                    "2ca91524f5ab8e39d6aa5373d1f11301ad2c5b95f5aa77eb30d92f572f5b9157"
+                ),
                 "isExtra": True,
                 "operator": "like",
                 "subject": "A",
@@ -933,7 +1245,9 @@ def test_merge_extra_filters_merges_different_val_types():
                 "clause": "WHERE",
                 "comparator": ["g1", "g2"],
                 "expressionType": "SIMPLE",
-                "filterOptionName": "c11969c994b40a83a4ae7d48ff1ea28e",
+                "filterOptionName": (
+                    "e2f7d6304169124258364916403b2d9208fce39dd7771797726111b7498bbd52"
+                ),
                 "isExtra": True,
                 "operator": "in",
                 "subject": "a",
@@ -985,7 +1299,9 @@ def test_merge_extra_filters_merges_different_val_types():
                 "clause": "WHERE",
                 "comparator": "someval",
                 "expressionType": "SIMPLE",
-                "filterOptionName": "90cfb3c34852eb3bc741b0cc20053b46",
+                "filterOptionName": (
+                    "eb77ff8188437d8722af8c932727da1e83ec37e88aaf800a3859ed352d87119f"
+                ),
                 "isExtra": True,
                 "operator": "in",
                 "subject": "a",
@@ -1040,7 +1356,9 @@ def test_merge_extra_filters_adds_unequal_lists():
                 "clause": "WHERE",
                 "comparator": ["g1", "g2", "g3"],
                 "expressionType": "SIMPLE",
-                "filterOptionName": "21cbb68af7b17e62b3b2f75e2190bfd7",
+                "filterOptionName": (
+                    "b3f17391546e130560efd1e841742bc5f154d09a7d534b8c0ec33fc1c8a146cd"
+                ),
                 "isExtra": True,
                 "operator": "in",
                 "subject": "a",
@@ -1049,7 +1367,9 @@ def test_merge_extra_filters_adds_unequal_lists():
                 "clause": "WHERE",
                 "comparator": ["c1", "c2", "c3"],
                 "expressionType": "SIMPLE",
-                "filterOptionName": "0a8dcb928f1f4bba97643c6e68d672f1",
+                "filterOptionName": (
+                    "41ef70f6edada46006253189b27778088da2cf27ccc69f703634493d7396708a"
+                ),
                 "isExtra": True,
                 "operator": "==",
                 "subject": "B",
@@ -1630,3 +1950,211 @@ def test_get_stacktrace():
     except Exception:
         stacktrace = get_stacktrace()
         assert stacktrace is None
+
+
+def test_sanitize_svg_content_safe():
+    """Test that safe SVG content is preserved."""
+    safe_svg = '<svg><rect width="10" height="10"/></svg>'
+    result = sanitize_svg_content(safe_svg)
+    assert "svg" in result
+    assert "rect" in result
+
+
+def test_sanitize_svg_content_removes_scripts():
+    """Test that dangerous script content is removed."""
+    malicious_svg = '<svg><script>alert("xss")</script><rect/></svg>'
+    result = sanitize_svg_content(malicious_svg)
+    assert "script" not in result.lower()
+    assert "alert" not in result
+
+
+def test_sanitize_svg_content_removes_script_with_attributes_on_closer():
+    """A closing </script foo> tag is still a valid closer to browsers."""
+    malicious_svg = "<svg><script>fetch('/api/v1/me/')</script foo></svg>"
+    result = sanitize_svg_content(malicious_svg)
+    assert "script" not in result.lower()
+    assert "fetch" not in result
+
+
+def test_sanitize_svg_content_removes_unterminated_script():
+    """An unterminated <script> opener with no closing tag is still stripped."""
+    malicious_svg = "<svg><script>alert('xss')"
+    result = sanitize_svg_content(malicious_svg)
+    assert "script" not in result.lower()
+    assert "alert" not in result
+
+
+def test_sanitize_url_relative():
+    """Test that relative URLs are allowed."""
+    assert sanitize_url("/static/spinner.gif") == "/static/spinner.gif"
+
+
+def test_sanitize_url_safe_absolute():
+    """Test that safe absolute URLs are allowed."""
+    assert (
+        sanitize_url("https://example.com/spinner.gif")
+        == "https://example.com/spinner.gif"
+    )
+    assert (
+        sanitize_url("http://localhost/spinner.png") == "http://localhost/spinner.png"
+    )
+
+
+def test_sanitize_url_blocks_dangerous():
+    """Test that dangerous URL schemes are blocked."""
+    assert sanitize_url("javascript:alert('xss')") == ""
+    assert sanitize_url("data:text/html,<script>alert(1)</script>") == ""
+
+
+def test_markdown_basic() -> None:
+    result = markdown("**bold**")
+
+    assert "<strong>bold</strong>" in result
+
+
+def test_markdown_allows_target_blank_on_links() -> None:
+    raw = '<a href="https://example.com" target="_blank">Click here</a>'
+    result = markdown(raw)
+
+    assert 'href="https://example.com"' in result
+    assert 'target="_blank"' in result
+    assert 'rel="noopener noreferrer"' in result
+
+
+def test_markdown_replaces_custom_rel_with_safe_rel() -> None:
+    raw = '<a href="https://example.com" rel="external">Click</a>'
+    result = markdown(raw)
+
+    assert 'href="https://example.com"' in result
+    assert ">Click</a>" in result
+    assert 'rel="noopener noreferrer"' in result
+    assert 'rel="external"' not in result
+
+
+def test_markdown_sanitizes_dangerous_content() -> None:
+    raw = '<div><script>alert("xss")</script>Content</div>'
+    result = markdown(raw)
+
+    assert "<script>" not in result
+    assert "alert" not in result
+
+
+def test_markdown_with_markup_wrap() -> None:
+    result = markdown("**bold**", markup_wrap=True)
+    from markupsafe import Markup
+
+    assert isinstance(result, Markup)
+    assert "<strong>bold</strong>" in str(result)
+
+
+def test_send_email_smtp_strips_crlf_from_subject() -> None:
+    """
+    CR/LF characters are stripped from the email subject so the value cannot
+    be used to inject additional email headers (header folding/splitting).
+    """
+    from email.mime.multipart import MIMEMultipart
+
+    from superset.utils.core import send_email_smtp
+
+    captured: dict[str, MIMEMultipart] = {}
+
+    def capture_mutator(msg: MIMEMultipart, **kwargs: Any) -> MIMEMultipart:
+        captured["msg"] = msg
+        return msg
+
+    config = {
+        "SMTP_MAIL_FROM": "from@example.com",
+        "EMAIL_HEADER_MUTATOR": capture_mutator,
+        "SMTP_HOST": "localhost",
+        "SMTP_PORT": 25,
+        "SMTP_USER": "",
+        "SMTP_PASSWORD": "",
+        "SMTP_STARTTLS": False,
+        "SMTP_SSL": False,
+        "SMTP_SSL_SERVER_AUTH": False,
+    }
+
+    send_email_smtp(
+        to="to@example.com",
+        subject="Hello\r\nBcc: attacker@example.com",
+        html_content="<b>body</b>",
+        config=config,
+        dryrun=True,
+    )
+
+    subject = captured["msg"]["Subject"]
+    assert "\r" not in subject
+    assert "\n" not in subject
+    assert subject == "Hello Bcc: attacker@example.com"
+
+
+def test_send_email_smtp_uses_custom_from_address() -> None:
+    from email.mime.multipart import MIMEMultipart
+
+    from superset.utils.core import send_email_smtp
+
+    captured: dict[str, MIMEMultipart] = {}
+
+    def capture_mutator(msg: MIMEMultipart, **kwargs: Any) -> MIMEMultipart:
+        captured["msg"] = msg
+        return msg
+
+    config = {
+        "SMTP_MAIL_FROM": "default@example.com",
+        "EMAIL_HEADER_MUTATOR": capture_mutator,
+        "SMTP_HOST": "localhost",
+        "SMTP_PORT": 25,
+        "SMTP_USER": "",
+        "SMTP_PASSWORD": "",
+        "SMTP_STARTTLS": False,
+        "SMTP_SSL": False,
+        "SMTP_SSL_SERVER_AUTH": False,
+    }
+
+    send_email_smtp(
+        to="recipient@example.com",
+        subject="Daily report",
+        html_content="<b>body</b>",
+        config=config,
+        dryrun=True,
+        from_address="reports@aven.com",
+    )
+
+    assert captured["msg"]["From"] == "reports@aven.com"
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "abc123",
+        "A_b-C_9",
+        "x" * 128,
+    ],
+)
+def test_sanitize_cookie_token_accepts_valid(token: str) -> None:
+    assert sanitize_cookie_token(token) == token
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        None,
+        "",
+        "x" * 129,
+        "has space",
+        "semi;colon",
+        "new\nline",
+        "equals=sign",
+        "comma,value",
+        "unicode✓",
+    ],
+)
+def test_sanitize_cookie_token_rejects_invalid(token: Optional[str]) -> None:
+    assert sanitize_cookie_token(token) is None
+
+
+def test_extract_dataframe_dtypes_with_duplicate_columns() -> None:
+    """extract_dataframe_dtypes should not crash on duplicate column names."""
+    df = pd.DataFrame([[1, 2, 3]], columns=["a", "b", "a"])
+    result = extract_dataframe_dtypes(df)
+    assert len(result) == 3
