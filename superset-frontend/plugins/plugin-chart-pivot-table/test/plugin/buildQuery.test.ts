@@ -146,6 +146,24 @@ test('non-additive metrics emit a single GROUPING SETS query with all levels', (
   expect((query as GroupingSetsQuery).grouping_sets[8]).toHaveLength(4);
 });
 
+test('non-additive metric without totals uses a plain detail query', (): void => {
+  const queryContext = buildQuery({
+    ...formData,
+    groupbyRows: ['day'],
+    groupbyColumns: ['week'],
+    metrics: ['rolling_pqs'],
+    colTotals: false,
+    colSubTotals: false,
+    rowTotals: false,
+    rowSubTotals: false,
+  });
+
+  expect(queryContext.queries).toHaveLength(1);
+  const [query] = queryContext.queries;
+  expect(query.columns).toHaveLength(2);
+  expect(query).not.toHaveProperty('grouping_sets');
+});
+
 test('should build groupby with series in form data', () => {
   const queryContext = buildQuery(formData);
   // Single GROUPING SETS query: the sole query carries the full column set.

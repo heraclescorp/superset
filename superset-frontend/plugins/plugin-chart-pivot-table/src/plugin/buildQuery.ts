@@ -82,21 +82,24 @@ export default function buildQuery(formData: PivotTableQueryFormData) {
   // A single query always suffices:
   //  - additive metrics (SUM/COUNT/MIN/MAX): a full-detail query whose
   //    subtotals/grand totals transformProps derives by client-side reduction.
-  //  - non-additive metrics: a GROUPING SETS query (one `grouping_sets` level
-  //    per displayed total/subtotal) so the database computes every level; the
-  //    backend falls back to per-level queries on engines without native
-  //    support. transformProps splits the combined result by level.
+  //  - non-additive metrics: GROUPING SETS when multiple levels are needed
+  //    (including percentage denominators), with a per-level fallback for
+  //    unsupported engines. A leaf-only query needs no grouping markers.
   const additive = allMetricsAdditive(ensureIsArray(formData.metrics));
-  const groupingSets = additive
+  const groupbyCombinations = additive
     ? undefined
-    : buildGroupbyCombinations(formData).map(level =>
-        // A dimension placed on both axes (a valid, if unusual, config) would
-        // otherwise appear twice in the same level, producing a duplicate
-        // column in the GROUPING SETS tuple sent to the database.
-        Array.from(
-          new Set([...level.rows, ...level.columns].map(getColumnLabel)),
-        ),
-      );
+    : buildGroupbyCombinations(formData);
+  const groupingSets =
+    groupbyCombinations && groupbyCombinations.length > 1
+      ? groupbyCombinations.map(level =>
+          // A dimension placed on both axes (a valid, if unusual, config) would
+          // otherwise appear twice in the same level, producing a duplicate
+          // column in the GROUPING SETS tuple sent to the database.
+          Array.from(
+            new Set([...level.rows, ...level.columns].map(getColumnLabel)),
+          ),
+        )
+      : undefined;
 
   return buildQueryContext(formData, baseQueryObject => {
     const { series_limit_metric, metrics, order_desc } = baseQueryObject;

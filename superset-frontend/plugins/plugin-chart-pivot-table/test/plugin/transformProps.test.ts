@@ -157,6 +157,40 @@ test('non-additive: transformProps splits the GROUPING SETS result by level', ()
   ]);
 });
 
+test('non-additive leaf-only results without markers remain visible', (): void => {
+  const localFormData = {
+    ...formData,
+    groupbyRows: ['day'],
+    groupbyColumns: ['week'],
+    metrics: ['rolling_pqs'],
+    colTotals: false,
+    colSubTotals: false,
+    rowTotals: false,
+    rowSubTotals: false,
+  };
+  const leafRows = [{ week: 1792108800000, day: 0, rolling_pqs: 1578 }];
+  const cp = new ChartProps<QueryFormData>({
+    formData: localFormData,
+    width: 800,
+    height: 600,
+    queriesData: [
+      {
+        data: leafRows,
+        colnames: ['week', 'day', 'rolling_pqs'],
+        coltypes: [2, 0, 0],
+      },
+    ],
+    hooks: { setDataMask },
+    filterState: { selectedFilters: {} },
+    datasource: { verboseMap: {}, columnFormats: {} },
+    theme: supersetTheme,
+  });
+
+  const result = transformProps(cp);
+  expect(result.data).toHaveLength(1);
+  expect(result.data[0].data).toEqual(leafRows);
+});
+
 test('should pass AUTO mode through for per-cell detection (single currency data)', () => {
   const autoFormData = {
     ...formData,
