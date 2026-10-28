@@ -34,6 +34,7 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.dialects.mysql.base import MySQLDialect
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql.base import PGDialect
 from sqlalchemy.dialects.sqlite.base import SQLiteDialect  # noqa: E402
 from sqlalchemy.engine.reflection import Inspector
@@ -600,7 +601,7 @@ def cast_text_column_to_json(
 
     SQLAlchemy now has a nice abstraction for JSON columns, even if the underlying
     database doesn't support the type natively. We should always use it when storing
-    JSON payloads.
+    JSON payloads. PostgreSQL columns already stored as JSONB need no conversion.
 
     :param table: The name of the table.
     :param column: The name of the column to be cast.
@@ -611,6 +612,11 @@ def cast_text_column_to_json(
     conn = op.get_bind()
 
     if isinstance(conn.dialect, PGDialect):
+        column_info = get_table_column(table, column)
+        if column_info and isinstance(column_info["type"], JSONB):
+            logger.info("Column %s.%s is already JSONB; skipping cast", table, column)
+            return
+
         conn.execute(
             text(
                 f"""

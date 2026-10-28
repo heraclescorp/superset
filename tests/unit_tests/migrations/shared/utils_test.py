@@ -15,6 +15,10 @@
 # specific language governing permissions and limitations
 # under the License.
 
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql.base import PGDialect
+
+from superset.migrations.shared import utils
 from superset.migrations.shared.utils import create_index, drop_index
 
 
@@ -202,3 +206,24 @@ def test_drop_index_drops_index_when_exists(monkeypatch):
     assert call_kwargs.get("index_name") == index_name
     # And a log message mentioning "Dropping index" should be generated.
     assert any("Dropping index" in msg for msg in dummy_logger.messages)
+
+
+def test_cast_text_column_to_json_skips_existing_jsonb_column(monkeypatch):
+    class ExistingJsonbConnection:
+        dialect = PGDialect()
+
+        def execute(self, *args, **kwargs):
+            raise AssertionError("An existing JSONB column must not be recast")
+
+    class MigrationOperations:
+        def get_bind(self):
+            return ExistingJsonbConnection()
+
+    monkeypatch.setattr(utils, "op", MigrationOperations())
+    monkeypatch.setattr(
+        utils,
+        "get_table_column",
+        lambda table, column: {"type": JSONB()},
+    )
+
+    utils.cast_text_column_to_json("sql_metrics", "currency")
