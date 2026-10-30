@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 
 from celery import current_task
 from celery.exceptions import SoftTimeLimitExceeded
+from flask import current_app as app
 from PIL import Image, ImageChops, ImageStat, UnidentifiedImageError
 
 from superset.utils.report_execution import (
@@ -816,7 +817,7 @@ def take_tiled_screenshot(  # noqa: C901
         element_name: CSS class name of the element to screenshot
         tile_height: Height of each tile in pixels
         load_wait: Seconds to wait for charts to load per tile (default 60)
-        animation_wait: Seconds to wait for chart animations per tile (default 0)
+        animation_wait: Seconds to wait for chart animations once per capture (default 0)
         log_context: Optional identifier (e.g. report execution id, or a
             cache key for thumbnails) appended to log lines so a slow/timed-out
             capture can be traced back to the run that produced it.
@@ -849,6 +850,11 @@ def take_tiled_screenshot(  # noqa: C901
         else None
     )
     strict_capture = report_execution_context is not None or require_complete_capture
+    readiness_wait = (
+        app.config["SCREENSHOT_PLAYWRIGHT_DEFAULT_TIMEOUT"] / 1000
+        if report_execution_context
+        else float(load_wait)
+    )
     context_suffix = f" [{log_context}]" if log_context else ""
     # Set right before re-raising the per-tile readiness timeout below, and
     # checked in the except block at the bottom of this function.
@@ -919,9 +925,7 @@ def take_tiled_screenshot(  # noqa: C901
         if strict_capture:
             mount_wait = _timeout_seconds(
                 "chart_holder_mount",
-                requested_seconds=(
-                    None if report_execution_context else float(load_wait)
-                ),
+                requested_seconds=readiness_wait,
                 reserve_seconds=(
                     report_execution_context.readiness_reserve_seconds
                     if report_execution_context
@@ -1056,7 +1060,7 @@ def take_tiled_screenshot(  # noqa: C901
             tile_wait_start = time.monotonic()
             tile_load_wait = _timeout_seconds(
                 "chart_readiness",
-                requested_seconds=None if report_execution_context else load_wait,
+                requested_seconds=readiness_wait,
                 reserve_seconds=(
                     report_execution_context.readiness_reserve_seconds
                     if report_execution_context
@@ -1134,14 +1138,11 @@ def take_tiled_screenshot(  # noqa: C901
                 )
             readiness_wait_elapsed = time.monotonic() - tile_wait_start
 
-            # Wait for chart animations (e.g. ECharts) to finish after spinner clears.
-            # The global animation wait before tiling only covers the first tile;
-            # subsequent tiles need their own wait after data loads. Capped at
-            # whatever remains of the budget; unlike the readiness wait above this
-            # is cosmetic settling, not a readiness check, so we simply skip it
-            # (rather than raise) once the budget runs out.
+            # Match the standard capture's single animation wait. Later tiles
+            # retain their scroll settle and positive readiness/stability gates,
+            # without repeating the capture-wide animation delay.
             animation_wait_elapsed = 0.0
-            if animation_wait > 0:
+            if i == 0 and animation_wait > 0:
                 # Cosmetic settling, not a readiness check: cap at whatever
                 # remains and simply skip (rather than raise) once the
                 # deadline/budget runs out.
@@ -1267,9 +1268,7 @@ def take_tiled_screenshot(  # noqa: C901
                 if strict_capture:
                     stable_wait = _timeout_seconds(
                         "capture_readiness_stability",
-                        requested_seconds=(
-                            None if report_execution_context else float(load_wait)
-                        ),
+                        requested_seconds=readiness_wait,
                         reserve_seconds=(
                             report_execution_context.readiness_reserve_seconds
                             if report_execution_context

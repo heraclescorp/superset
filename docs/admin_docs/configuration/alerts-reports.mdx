@@ -60,6 +60,23 @@ In Superset versions &lt;=4.0x, users installed Firefox or Chrome and that was d
 
 Only the worker container needs the browser.
 
+### Playwright screenshot waits
+
+`SCREENSHOT_SELENIUM_HEADSTART` and `SCREENSHOT_SELENIUM_ANIMATION_WAIT` are
+capture-wide delays in seconds. The animation delay is paid once, including for
+tiled captures; scrolling to each tile retains a one-second settling delay.
+
+Scheduled-report readiness operations use `SCREENSHOT_PLAYWRIGHT_DEFAULT_TIMEOUT`
+(milliseconds, default `60000`) as their operation limit, further capped by the
+remaining report execution budget after capture/delivery/cleanup reserves. The
+overall report budget is a safety ceiling, not permission for one readiness wait
+to consume the entire execution. `SCREENSHOT_LOAD_WAIT` does not replace this
+scheduled Playwright operation limit.
+
+These limits do not relax completeness checks: missing chart holders, unpainted
+charts, unstable readiness, and invalid captures still fail closed rather than
+delivering a partial report.
+
 ### Slack integration
 
 To send alerts and reports to Slack channels, you need to create a new Slack Application on your workspace.

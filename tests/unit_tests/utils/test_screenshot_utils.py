@@ -18,10 +18,12 @@
 import io
 import shutil
 import subprocess
+from dataclasses import replace
 from unittest.mock import MagicMock, patch
 from uuid import UUID
 
 import pytest
+from flask import Flask
 from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
 
 from superset.utils import json
@@ -1090,6 +1092,102 @@ class TestTakeTiledScreenshot:
             "capture",
         ]
 
+    @pytest.mark.parametrize("blocked_wait", [0, 1, 2])
+    @pytest.mark.parametrize(
+        "operation_timeout_ms, elapsed",
+        [(60_000, 0), (17_000, 0), (60_000, 3370)],
+    )
+    def test_report_readiness_waits_are_bounded_and_fail_before_capture(
+        self,
+        app: Flask,
+        mock_page: MagicMock,
+        operation_timeout_ms: int,
+        elapsed: int,
+        blocked_wait: int,
+    ) -> None:
+        from superset.utils.screenshot_utils import PlaywrightTimeout
+
+        app.config["SCREENSHOT_PLAYWRIGHT_DEFAULT_TIMEOUT"] = operation_timeout_ms
+        now = float(elapsed)
+        wait_index = 0
+        context = replace(
+            _report_context(),
+            deadline=ReportExecutionDeadline(
+                total_seconds=3600, started_at=0, _clock=lambda: now
+            ),
+        )
+
+        def evaluate(script: str, _arg: object = None) -> object:
+            if "scrollWidth" in script:
+                return {"height": 1000, "top": 0, "left": 0, "width": 800}
+            return []
+
+        def settle(milliseconds: float) -> None:
+            nonlocal now
+            now += milliseconds / 1000
+
+        def wait_for_content(
+            expression: str, *, timeout: float, **kwargs: object
+        ) -> None:
+            nonlocal now, wait_index
+            index = wait_index
+            wait_index += 1
+            if index == blocked_wait:
+                now += timeout / 1000
+                raise PlaywrightTimeout("chart content never ready")
+
+        mock_page.evaluate.side_effect = evaluate
+        mock_page.wait_for_timeout.side_effect = settle
+        mock_page.wait_for_function.side_effect = wait_for_content
+        with pytest.raises(PlaywrightTimeout, match="never ready"):
+            take_tiled_screenshot(
+                mock_page,
+                "dashboard",
+                tile_height=1000,
+                load_wait=1200,
+                report_execution_context=context,
+            )
+
+        settle_seconds = 0 if blocked_wait == 0 else 1
+        expected_wait = min(
+            operation_timeout_ms / 1000, 3600 - elapsed - 210 - settle_seconds
+        )
+        assert now - elapsed == settle_seconds + expected_wait
+        assert context.deadline.remaining_seconds >= 210
+        mock_page.screenshot.assert_not_called()
+
+    def test_report_budget_exhausted_after_scroll_skips_capture(
+        self, mock_page: MagicMock
+    ) -> None:
+        from superset.utils.report_execution import ReportExecutionBudgetExceededError
+
+        now = 0.0
+        context = replace(
+            _report_context(),
+            deadline=ReportExecutionDeadline(
+                total_seconds=211, started_at=0, _clock=lambda: now
+            ),
+        )
+
+        def settle(milliseconds: float) -> None:
+            nonlocal now
+            now += milliseconds / 1000
+
+        mock_page.wait_for_timeout.side_effect = settle
+        with pytest.raises(ReportExecutionBudgetExceededError):
+            take_tiled_screenshot(
+                mock_page,
+                "dashboard",
+                tile_height=2000,
+                animation_wait=120,
+                report_execution_context=context,
+            )
+
+        assert now == 1
+        assert context.deadline.remaining_seconds == 210
+        assert mock_page.wait_for_function.call_count == 1
+        mock_page.screenshot.assert_not_called()
+
     def test_zero_holders_timeout_before_dimensions_or_capture(self, mock_page):
         """An empty DOM cannot vacuously pass the tiled readiness gate."""
         from superset.utils.screenshot_utils import PlaywrightTimeout
@@ -1616,25 +1714,58 @@ class TestTakeTiledScreenshot:
         sig = inspect.signature(take_tiled_screenshot)
         assert sig.parameters["load_wait"].default == 60
 
-    def test_per_tile_animation_wait_called_per_tile(self, mock_page):
-        """animation_wait adds an extra wait per tile after the spinner check."""
-        with patch("superset.utils.screenshot_utils.combine_screenshot_tiles"):
-            take_tiled_screenshot(
-                mock_page, "dashboard", tile_height=2000, animation_wait=5
+    @pytest.mark.parametrize("report", [False, True])
+    def test_animation_wait_runs_once_across_multiple_tiles(
+        self, mock_page: MagicMock, report: bool
+    ) -> None:
+        """All tiles capture within one animation wait plus a scroll settle each."""
+        now = 0.0
+        capture_times: list[float] = []
+        context = (
+            replace(
+                _report_context(),
+                deadline=ReportExecutionDeadline(
+                    total_seconds=3600, started_at=0, _clock=lambda: now
+                ),
+            )
+            if report
+            else None
+        )
+
+        def evaluate(script: str, _arg: object = None) -> object:
+            if "scrollWidth" in script:
+                return {"height": 3000, "top": 0, "left": 0, "width": 800}
+            if script == CONTENTFUL_CHART_HOLDERS_IN_CLIP_JS:
+                return {"total": 1, "contentful": 1}
+            return True
+
+        def settle(milliseconds: float) -> None:
+            nonlocal now
+            now += milliseconds / 1000
+
+        def screenshot(**kwargs: object) -> bytes:
+            capture_times.append(now)
+            return self._create_chart_like_tile()
+
+        mock_page.evaluate.side_effect = evaluate
+        mock_page.wait_for_timeout.side_effect = settle
+        mock_page.screenshot.side_effect = screenshot
+        with patch("superset.utils.screenshot_utils.time.monotonic", new=lambda: now):
+            result = take_tiled_screenshot(
+                mock_page,
+                "dashboard",
+                tile_height=1000,
+                animation_wait=120,
+                report_execution_context=context,
             )
 
-        # 3 tiles × (1 scroll settle + 1 animation wait) = 6 total calls
-        assert mock_page.wait_for_timeout.call_count == 6
-
-        animation_calls = [
-            call
-            for call in mock_page.wait_for_timeout.call_args_list
-            if call[0][0] == 5 * 1000
-        ]
-        assert len(animation_calls) == 3
+        assert capture_times == [121, 122, 123]
+        assert result is not None
+        with Image.open(io.BytesIO(result)) as image:
+            assert image.size == (800, 3000)
 
     def test_animation_wait_default_is_zero(self):
-        """animation_wait defaults to 0 so no extra per-tile wait by default."""
+        """animation_wait defaults to 0 so no extra capture-wide wait by default."""
         import inspect
 
         from superset.utils.screenshot_utils import take_tiled_screenshot
@@ -1976,7 +2107,7 @@ class TestTileWaitBudget:
             for call in mock_page.wait_for_timeout.call_args_list
             if call[0][0] == 5 * 1000
         ]
-        assert len(animation_calls) == 3
+        assert len(animation_calls) == 1
 
     def test_per_tile_timing_debug_line_logged(self, mock_page):
         """Each tile logs a DEBUG timing breakdown (readiness wait, animation

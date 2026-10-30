@@ -22,6 +22,7 @@ from uuid import UUID
 
 import pytest
 from celery.exceptions import SoftTimeLimitExceeded
+from flask import Flask
 from PIL import Image, ImageDraw
 
 from superset.utils.report_execution import (
@@ -1820,41 +1821,87 @@ class TestWebDriverPlaywrightChartReadiness:
 
         assert mock_page.wait_for_function.call_args.kwargs["timeout"] == 230_000
 
-    def test_report_readiness_uses_shared_deadline_and_phase_reserves(self):
-        from uuid import UUID
+    @pytest.mark.parametrize(
+        "operation_timeout_ms, elapsed, expected_wait",
+        [(60_000, 0, 60), (17_000, 0, 17), (60_000, 3370, 20)],
+    )
+    @pytest.mark.parametrize("element_name", ["standalone", "chart-container"])
+    def test_report_readiness_uses_shared_deadline_and_phase_reserves(
+        self,
+        app: Flask,
+        operation_timeout_ms: int,
+        elapsed: int,
+        expected_wait: int,
+        element_name: str,
+    ) -> None:
+        from superset.utils.webdriver import PlaywrightTimeout
 
-        from superset.utils.report_execution import (
-            ReportExecutionContext,
-            ReportExecutionDeadline,
-        )
-
+        app.config["SCREENSHOT_PLAYWRIGHT_DEFAULT_TIMEOUT"] = operation_timeout_ms
+        now = float(elapsed)
         page = MagicMock()
-        page.evaluate.return_value = [{"chartId": "7", "state": "rendered"}]
-        deadline = ReportExecutionDeadline(
-            total_seconds=900,
-            started_at=0,
-            _clock=lambda: 100,
-        )
-        report_context = ReportExecutionContext(
-            execution_id=UUID("084e7ee6-5557-4ecd-9632-b7f39c9ec524"),
-            report_schedule_id=11,
-            dashboard_id=805,
-            expected_chart_count=52,
-            deadline=deadline,
-            capture_reserve_seconds=60,
-            delivery_reserve_seconds=120,
-            cleanup_reserve_seconds=30,
+        page.evaluate.return_value = []
+        report_context = replace(
+            _report_context(),
+            deadline=ReportExecutionDeadline(
+                total_seconds=3600,
+                started_at=0,
+                _clock=lambda: now,
+            ),
         )
 
-        WebDriverPlaywright._wait_for_charts_ready(
-            page,
-            "http://example.com/dashboard/805",
-            5,
-            "standalone",
-            report_execution_context=report_context,
+        def wait_for_missing_content(expression: str, *, timeout: float) -> None:
+            nonlocal now
+            now += timeout / 1000
+            raise PlaywrightTimeout("chart content never mounted")
+
+        page.wait_for_function.side_effect = wait_for_missing_content
+        with pytest.raises(PlaywrightTimeout, match="never mounted"):
+            WebDriverPlaywright._wait_for_charts_ready(
+                page,
+                "http://example.com/dashboard/805",
+                1200,
+                element_name,
+                report_execution_context=report_context,
+            )
+
+        assert now - elapsed == expected_wait
+        page.screenshot.assert_not_called()
+        assert report_context.deadline.remaining_seconds >= 210
+
+    @pytest.mark.parametrize("elapsed, expected_wait", [(0, 60), (3370, 20)])
+    def test_report_capture_stability_timeout_preserves_budget_and_skips_capture(
+        self, app: Flask, elapsed: int, expected_wait: int
+    ) -> None:
+        from superset.utils.webdriver import PlaywrightTimeout
+
+        app.config["SCREENSHOT_PLAYWRIGHT_DEFAULT_TIMEOUT"] = 60_000
+        now = float(elapsed)
+        page = MagicMock()
+        element = MagicMock()
+        context = replace(
+            _report_context(),
+            deadline=ReportExecutionDeadline(
+                total_seconds=3600, started_at=0, _clock=lambda: now
+            ),
         )
 
-        assert page.wait_for_function.call_args.kwargs["timeout"] == 590_000
+        def wait_for_stability(
+            expression: str, *, timeout: float, **kwargs: object
+        ) -> None:
+            nonlocal now
+            now += timeout / 1000
+            raise PlaywrightTimeout("chart content never stabilized")
+
+        page.wait_for_function.side_effect = wait_for_stability
+        with pytest.raises(PlaywrightTimeout, match="never stabilized"):
+            WebDriverPlaywright._get_validated_screenshot(
+                page, element, "standalone", None, report_execution_context=context
+            )
+
+        assert now - elapsed == expected_wait
+        assert context.deadline.remaining_seconds >= 210
+        page.screenshot.assert_not_called()
+        element.screenshot.assert_not_called()
 
     def test_capture_readiness_wires_stable_predicate_and_timeout(self):
         page = MagicMock()
@@ -1889,7 +1936,7 @@ class TestWebDriverPlaywrightChartReadiness:
             readiness_call.kwargs["arg"]["stabilityMs"]
             == REPORT_CAPTURE_READINESS_STABILITY_MS
         )
-        assert readiness_call.kwargs["timeout"] == 690_000
+        assert readiness_call.kwargs["timeout"] == 60_000
 
     def test_chart_capture_uses_chart_container_stable_predicate(self):
         page = MagicMock()
@@ -2392,10 +2439,10 @@ class TestWebDriverPlaywrightAnimationWaitOrder:
     @patch("superset.utils.webdriver._browser_manager")
     @patch("superset.utils.webdriver.take_tiled_screenshot")
     @patch("superset.utils.webdriver.app")
-    def test_tiled_path_passes_animation_wait_per_tile_no_global_wait(
+    def test_tiled_path_delegates_once_only_animation_wait(
         self, mock_app, mock_take_tiled, mock_browser_manager
     ):
-        """Tiled path delegates animation_wait to take_tiled_screenshot; no global."""
+        """The tiled helper owns the single animation wait; no extra global wait."""
         mock_user = MagicMock()
         mock_user.username = "test_user"
         mock_app.config = {
