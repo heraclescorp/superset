@@ -321,6 +321,9 @@ class WebDriverPlaywright(WebDriverProxy):
                 stable_timeout = (
                     report_execution_context.deadline.timeout_seconds(
                         "capture_readiness_stability",
+                        requested_seconds=(
+                            app.config["SCREENSHOT_PLAYWRIGHT_DEFAULT_TIMEOUT"] / 1000
+                        ),
                         reserve_seconds=(
                             report_execution_context.readiness_reserve_seconds
                         ),
@@ -647,6 +650,9 @@ class WebDriverPlaywright(WebDriverProxy):
         if report_execution_context:
             effective_load_wait = report_execution_context.deadline.timeout_seconds(
                 "chart_readiness",
+                requested_seconds=(
+                    app.config["SCREENSHOT_PLAYWRIGHT_DEFAULT_TIMEOUT"] / 1000
+                ),
                 reserve_seconds=report_execution_context.readiness_reserve_seconds,
             )
             task_budget = report_execution_context.deadline.total_seconds
@@ -959,6 +965,10 @@ class WebDriverPlaywright(WebDriverProxy):
                     element_wait_timeout = (
                         report_execution_context.deadline.timeout_seconds(
                             "dashboard_mount",
+                            requested_seconds=(
+                                app.config["SCREENSHOT_PLAYWRIGHT_DEFAULT_TIMEOUT"]
+                                / 1000
+                            ),
                             reserve_seconds=(
                                 report_execution_context.readiness_reserve_seconds
                             ),
@@ -997,6 +1007,10 @@ class WebDriverPlaywright(WebDriverProxy):
                         slice_wait_timeout = (
                             report_execution_context.deadline.timeout_seconds(
                                 "chart_mount",
+                                requested_seconds=(
+                                    app.config["SCREENSHOT_PLAYWRIGHT_DEFAULT_TIMEOUT"]
+                                    / 1000
+                                ),
                                 reserve_seconds=(
                                     report_execution_context.readiness_reserve_seconds
                                 ),
