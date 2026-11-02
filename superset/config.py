@@ -3325,6 +3325,12 @@ TASK_PROGRESS_UPDATE_THROTTLE_INTERVAL = 2  # seconds
 GTF_TASK_HEARTBEAT_INTERVAL = 15  # seconds
 GTF_ORPHAN_TASK_TIMEOUT = 60  # seconds
 
+# Optional queue-wait limit for PENDING tasks with no claim or heartbeat. Active
+# prerequisites pause this limit; after they all finish, the full budget starts
+# at the later of task creation and the latest prerequisite end. None disables it.
+# Applied by the same reap_orphaned_tasks beat job; values are seconds.
+GTF_PENDING_TASK_TIMEOUT: int | None = None
+
 # ---------------------------------------------------
 # Distributed Coordination Configuration
 # ---------------------------------------------------

@@ -548,6 +548,38 @@ def test_teardown_with_app_context():
         mock_remove.assert_called_once()
 
 
+@pytest.mark.parametrize("is_eager,called_directly", [(True, False), (False, True)])
+def test_teardown_preserves_caller_session(
+    is_eager: bool, called_directly: bool
+) -> None:
+    """A synchronous task must not remove the surrounding caller's session."""
+    with mock.patch("superset.create_app", return_value=app):
+        from superset.tasks.celery_app import teardown
+
+    task = mock.Mock()
+    task.request.is_eager = is_eager
+    task.request.called_directly = called_directly
+    with app.app_context():
+        caller_session = db.session()
+        teardown(retval="success", task=task)
+        assert db.session() is caller_session
+
+
+def test_eager_task_keeps_existing_caller_session() -> None:
+    """Celery's postrun signal must not replace an eager caller's scoped session."""
+    with mock.patch("superset.create_app", return_value=app):
+        from superset.tasks.celery_app import teardown  # noqa: F401
+
+    @celery_app.task
+    def session_probe() -> bool:
+        return db.session() is caller_session
+
+    with app.app_context():
+        caller_session = db.session()
+        assert session_probe.apply().get() is True
+        assert db.session() is caller_session
+
+
 def delete_tmp_view_or_table(name: str, ctas_method: CTASMethod):
     with db.get_engine().begin() as conn:
         conn.execute(text(f"DROP {ctas_method.name} IF EXISTS {name}"))

@@ -224,19 +224,17 @@ class TestExecuteTaskDagGate:
         # A non-Retry error from self.retry models a publish failure.
         fake_self.retry.side_effect = RuntimeError("broker down")
 
-        transition = MagicMock()
-        transition.return_value.run.return_value = True
-
-        with patch(
-            "superset.commands.tasks.internal_update.InternalStatusTransitionCommand",
-            transition,
+        with (
+            patch("superset.tasks.scheduler.db") as database,
+            patch(
+                "superset.tasks.scheduler._fail_unclaimed_task", return_value=True
+            ) as fail,
         ):
-            result, _, task_manager = self._call(
-                fake_self, task, unmet_return=DAG_WAITING
-            )
+            result, _, _ = self._call(fake_self, task, unmet_return=DAG_WAITING)
 
         assert result["status"] == TaskStatus.FAILURE.value
-        task_manager.publish_completion.assert_called_once()
+        database.session.rollback.assert_called_once()
+        fail.assert_called_once_with(native, fake_self.retry.side_effect)
 
     def test_failed_prerequisite_publishes_failure(self):
         native = uuid4()

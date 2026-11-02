@@ -22,6 +22,7 @@ it needs to call create_app() in order to initialize things properly
 
 from typing import Any
 
+from celery import Task
 from celery.signals import task_postrun, worker_process_init
 from flask import has_app_context
 
@@ -51,20 +52,21 @@ def reset_db_connection_pool(**kwargs: Any) -> None:  # pylint: disable=unused-a
 @task_postrun.connect
 def teardown(  # pylint: disable=unused-argument
     retval: Any,
+    task: Task | None = None,
     *args: Any,
     **kwargs: Any,
 ) -> None:
     """
     After each Celery task teardown the Flask-SQLAlchemy session.
 
-    Note for non eagar requests Flask-SQLAlchemy will perform the teardown.
+    Eager and direct invocations share their caller's session.
 
     :param retval: The return value of the task
     :see: https://docs.celeryq.dev/en/stable/userguide/signals.html#task-postrun
     :see: https://gist.github.com/twolfson/a1b329e9353f9b575131
     """
 
-    if not flask_app.config.get("CELERY_ALWAYS_EAGER"):
-        # Ensure session is removed only inside flask app context
-        if has_app_context():
-            db.session.remove()
+    if task is not None and (task.request.is_eager or task.request.called_directly):
+        return
+    if has_app_context():
+        db.session.remove()

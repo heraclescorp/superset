@@ -16,7 +16,7 @@
 # under the License.
 
 from collections.abc import Iterator
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import UUID
 
 import pytest
@@ -934,3 +934,210 @@ def test_chart_policy_join_during_execution_survives_executor_write(
     assert fresh.properties_dict["is_abortable"] is True
     assert policy.routing_channels(fresh) == ["user:1:tabA", "user:1:tabB"]
     assert policy.on_unsubscribe(fresh, principal="user:1", client_ref="tabA") is False
+
+
+@pytest.mark.parametrize("claim_marker", [None, "started_at", "last_heartbeat"])
+def test_conditional_status_update_requires_unclaimed(
+    session_with_task: Session, claim_marker: str | None
+) -> None:
+    """Pre-claim failure cannot overwrite even a still-PENDING worker claim."""
+    from superset.daos.tasks import TaskDAO
+
+    task = create_task(session_with_task, task_uuid=TASK_UUID)
+    original_dedup_key = task.dedup_key
+    if claim_marker:
+        setattr(task, claim_marker, datetime(2026, 10, 1))
+    session_with_task.flush()
+
+    changed = TaskDAO.conditional_status_update(
+        TASK_UUID,
+        TaskStatus.FAILURE,
+        expected_status=TaskStatus.PENDING,
+        require_unclaimed=True,
+        properties={"error_message": "Pre-claim failure"},
+        set_ended_at=True,
+    )
+
+    session_with_task.refresh(task)
+    assert changed is (claim_marker is None)
+    if changed:
+        assert task.status == TaskStatus.FAILURE.value
+        assert task.dedup_key == get_finished_dedup_key(task.uuid)
+        assert task.ended_at is not None
+    else:
+        assert task.status == TaskStatus.PENDING.value
+        assert task.dedup_key == original_dedup_key
+        assert task.ended_at is None
+        assert "error_message" not in task.properties_dict
+
+
+@pytest.mark.parametrize(
+    "status,age,claim_marker,expired",
+    [
+        (TaskStatus.PENDING, 1801, None, True),
+        (TaskStatus.PENDING, 1799, None, False),
+        (TaskStatus.PENDING, 1800, None, False),
+        (TaskStatus.PENDING, 1801, "started_at", False),
+        (TaskStatus.PENDING, 1801, "last_heartbeat", False),
+        (TaskStatus.IN_PROGRESS, 1801, None, False),
+        (TaskStatus.ABORTING, 1801, None, False),
+        (TaskStatus.FAILURE, 1801, None, False),
+    ],
+)
+def test_find_expired_pending_requires_old_unclaimed_queue_entry(
+    session_with_task: Session,
+    mocker: MockerFixture,
+    status: TaskStatus,
+    age: int,
+    claim_marker: str | None,
+    expired: bool,
+) -> None:
+    """Only old, never-claimed PENDING entries are pending-expiry candidates."""
+    from superset.daos.tasks import TaskDAO
+
+    now = datetime(2026, 10, 1, 12)
+    mocker.patch.object(TaskDAO, "_db_utcnow", return_value=now)
+    task = create_task(session_with_task, status=status)
+    task.created_on = now - timedelta(seconds=age)
+    if claim_marker:
+        setattr(task, claim_marker, now)
+    session_with_task.flush()
+
+    assert (task.uuid in TaskDAO.find_expired_pending(1800)) is expired
+
+
+@pytest.mark.parametrize(
+    "parents,expired",
+    [
+        ([(TaskStatus.PENDING, None)], False),
+        ([(TaskStatus.IN_PROGRESS, None)], False),
+        ([(TaskStatus.ABORTING, None)], False),
+        ([(TaskStatus.SUCCESS, 10)], False),
+        ([(TaskStatus.SUCCESS, 1800)], False),
+        ([(TaskStatus.SUCCESS, 1801)], True),
+        ([(TaskStatus.FAILURE, 1801)], True),
+        ([(TaskStatus.ABORTED, 1801)], True),
+        ([(TaskStatus.TIMED_OUT, 1801)], True),
+        ([(TaskStatus.SUCCESS, 3600), (TaskStatus.SUCCESS, 10)], False),
+        ([(TaskStatus.FAILURE, 3600), (TaskStatus.IN_PROGRESS, None)], False),
+        ([(TaskStatus.FAILURE, None)], True),
+    ],
+)
+def test_pending_expiry_waits_for_all_parents_and_latest_end(
+    session_with_task: Session,
+    mocker: MockerFixture,
+    parents: list[tuple[TaskStatus, int | None]],
+    expired: bool,
+) -> None:
+    """DAG waits do not consume queue budget, including after a failed parent."""
+    from superset.daos.tasks import TaskDAO
+
+    now = datetime(2026, 10, 1, 12)
+    mocker.patch.object(TaskDAO, "_db_utcnow", return_value=now)
+    child = create_task(session_with_task, task_key="child")
+    child.created_on = now - timedelta(hours=2)
+    parent_ids = []
+    for index, (status, ended_age) in enumerate(parents):
+        parent = create_task(
+            session_with_task, task_key=f"parent-{index}", status=status
+        )
+        parent.created_on = now - timedelta(hours=3)
+        parent.ended_at = (
+            now - timedelta(seconds=ended_age) if ended_age is not None else None
+        )
+        parent_ids.append(parent.id)
+    TaskDAO.add_dependencies(child.id, parent_ids)
+    # Supply a deterministic fallback for legacy terminal parents without ended_at.
+    session_with_task.query(Task).filter(Task.id.in_(parent_ids)).update(
+        {"changed_on": now - timedelta(hours=1)}, synchronize_session=False
+    )
+
+    assert (child.uuid in TaskDAO.find_expired_pending(1800)) is expired
+    assert TaskDAO.fail_expired_pending(child.uuid, 1800, {}) is expired
+
+
+@pytest.mark.parametrize(
+    "race",
+    ["heartbeat", "start", "status", "parent_active", "parent_end", "creation"],
+)
+def test_pending_expiry_rechecks_full_eligibility_after_scan(
+    session_with_task: Session, mocker: MockerFixture, race: str
+) -> None:
+    """A candidate UUID alone never authorizes failure after eligibility changes."""
+    from superset.daos.tasks import TaskDAO
+
+    now = datetime(2026, 10, 1, 12)
+    mocker.patch.object(TaskDAO, "_db_utcnow", return_value=now)
+    child = create_task(session_with_task, task_key="child")
+    child.created_on = now - timedelta(hours=2)
+    parent = create_task(
+        session_with_task, task_key="parent", status=TaskStatus.SUCCESS
+    )
+    parent.ended_at = now - timedelta(hours=1)
+    TaskDAO.add_dependencies(child.id, [parent.id])
+    assert child.uuid in TaskDAO.find_expired_pending(1800)
+    original_dedup_key = child.dedup_key
+
+    target = child
+    updates: dict[str, datetime | str]
+    if race == "heartbeat":
+        updates = {"last_heartbeat": now}
+    elif race == "start":
+        updates = {"started_at": now}
+    elif race == "status":
+        updates = {"status": TaskStatus.IN_PROGRESS.value}
+    elif race == "creation":
+        updates = {"created_on": now}
+    elif race == "parent_active":
+        target = parent
+        updates = {"status": TaskStatus.IN_PROGRESS.value}
+    else:
+        target = parent
+        updates = {"ended_at": now}
+    session_with_task.query(Task).filter(Task.id == target.id).update(
+        updates, synchronize_session=False
+    )
+
+    assert not TaskDAO.fail_expired_pending(
+        child.uuid, 1800, {"error_message": "Must not be saved"}
+    )
+    session_with_task.refresh(child)
+    expected = TaskStatus.IN_PROGRESS if race == "status" else TaskStatus.PENDING
+    assert child.status == expected.value
+    assert child.dedup_key == original_dedup_key
+    assert child.ended_at is None
+    assert "error_message" not in child.properties_dict
+
+
+def test_pending_expiry_terminal_write_releases_dedup_and_keeps_subscription(
+    session_with_task: Session, mocker: MockerFixture
+) -> None:
+    """Pending expiry has the same terminal and subscription semantics as execution."""
+    from superset.daos.tasks import TaskDAO
+
+    now = datetime(2026, 10, 1, 12)
+    mocker.patch.object(TaskDAO, "_db_utcnow", return_value=now)
+    task = create_task(session_with_task, task_uuid=TASK_UUID)
+    task.created_on = now - timedelta(hours=1)
+    TaskDAO.merge_subscription_state(task, {"consumers": ["user:1:tabA"]})
+    session_with_task.flush()
+
+    assert TaskDAO.fail_expired_pending(
+        task.uuid,
+        1800,
+        {"error_message": "Expired", "private": {"framework": {"exception_type": "E"}}},
+    )
+
+    session_with_task.refresh(task)
+    assert task.status == TaskStatus.FAILURE.value
+    assert task.ended_at == now
+    assert task.started_at is None
+    assert task.last_heartbeat is None
+    assert task.dedup_key == get_finished_dedup_key(task.uuid)
+    assert task.properties_dict["error_message"] == "Expired"
+    assert task.properties_dict["private"] == {
+        "subscription": {"consumers": ["user:1:tabA"]},
+        "framework": {"exception_type": "E"},
+    }
+    replacement = create_task(session_with_task)
+    assert replacement.dedup_key != task.dedup_key

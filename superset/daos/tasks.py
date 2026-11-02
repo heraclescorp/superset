@@ -201,6 +201,84 @@ class TaskDAO(BaseDAO[Task]):
         return [uuid for (uuid,) in rows]
 
     @classmethod
+    def _expired_pending_filter(cls, stale_before: datetime) -> ColumnElement[bool]:
+        """Share the queue-age and prerequisite guard between scan and UPDATE."""
+        # GROUP BY keeps this derived table materialized on MySQL, where an
+        # UPDATE cannot otherwise read its own target table in a subquery.
+        blocked = (
+            sa.select(TaskDependency.task_id)
+            .join(Task, Task.id == TaskDependency.depends_on_task_id)
+            .filter(
+                sa.or_(
+                    Task.status.notin_(TERMINAL_STATES),
+                    sa.func.coalesce(Task.ended_at, Task.changed_on, Task.created_on)
+                    >= stale_before,
+                )
+            )
+            .group_by(TaskDependency.task_id)
+            .subquery()
+        )
+        return sa.and_(
+            Task.status == TaskStatus.PENDING.value,
+            Task.started_at.is_(None),
+            Task.last_heartbeat.is_(None),
+            Task.created_on < stale_before,
+            Task.id.notin_(sa.select(blocked.c.task_id)),
+        )
+
+    @classmethod
+    def find_expired_pending(cls, pending_timeout_seconds: int) -> list[UUID]:
+        """Find unclaimed tasks whose runnable queue time exceeded the timeout.
+
+        Active prerequisites suspend expiry. Once all prerequisites are terminal,
+        the queue budget starts at the later of creation and their latest end.
+        Legacy terminal rows lacking ended_at use their last change/creation time.
+        Failed prerequisites receive the same bounded budget, so lost deliveries
+        cannot strand their dependents indefinitely.
+        """
+        stale_before = cls._db_utcnow() - timedelta(seconds=pending_timeout_seconds)
+        rows = (
+            db.session.query(Task.uuid)
+            .filter(cls._expired_pending_filter(stale_before))
+            .all()
+        )
+        return [uuid for (uuid,) in rows]
+
+    @classmethod
+    def fail_expired_pending(
+        cls,
+        task_uuid: UUID,
+        pending_timeout_seconds: int,
+        properties: TaskProperties,
+    ) -> bool:
+        """Fail a pending candidate only if its full expiry guard still holds.
+
+        Recheck queue age, prerequisites, status, claim and heartbeat in the UPDATE
+        itself; a candidate scan is not ownership of a terminal transition.
+        """
+        properties = cls._with_current_subscription_state(task_uuid, properties)
+        now = cls._db_utcnow()
+        rows_updated = (
+            db.session.query(Task)
+            .filter(
+                Task.uuid == task_uuid,
+                cls._expired_pending_filter(
+                    now - timedelta(seconds=pending_timeout_seconds)
+                ),
+            )
+            .update(
+                {
+                    "status": TaskStatus.FAILURE.value,
+                    "properties": json.dumps(properties),
+                    "ended_at": now,
+                    "dedup_key": get_finished_dedup_key(task_uuid),
+                },
+                synchronize_session=False,
+            )
+        )
+        return rows_updated > 0
+
+    @classmethod
     def get_statuses_changed_since(
         cls, cursor: datetime | None, task_type: str | None = None
     ) -> tuple[dict[str, dict[str, Any]], datetime]:
@@ -850,6 +928,7 @@ class TaskDAO(BaseDAO[Task]):
         properties: TaskProperties | None = None,
         set_started_at: bool = False,
         set_ended_at: bool = False,
+        require_unclaimed: bool = False,
     ) -> bool:
         """
         Atomically update task status only if current status matches expected.
@@ -870,6 +949,7 @@ class TaskDAO(BaseDAO[Task]):
         :param properties: Optional properties to update atomically with status
         :param set_started_at: If True, also set started_at to current timestamp
         :param set_ended_at: If True, also set ended_at to current timestamp
+        :param require_unclaimed: Require both started_at and last_heartbeat NULL
         :returns: True if status was updated (expected matched), False otherwise
         """
         # Normalize status values
@@ -911,12 +991,15 @@ class TaskDAO(BaseDAO[Task]):
         if new_status_val in TERMINAL_STATES:
             update_values["dedup_key"] = get_finished_dedup_key(task_uuid)
 
-        # Atomic compare-and-swap: only update if status matches expected
-        rows_updated = (
-            db.session.query(Task)
-            .filter(Task.uuid == task_uuid, Task.status.in_(expected_vals))
-            .update(update_values, synchronize_session=False)
+        # Atomic compare-and-swap: only update if all ownership guards still hold.
+        query = db.session.query(Task).filter(
+            Task.uuid == task_uuid, Task.status.in_(expected_vals)
         )
+        if require_unclaimed:
+            query = query.filter(
+                Task.started_at.is_(None), Task.last_heartbeat.is_(None)
+            )
+        rows_updated = query.update(update_values, synchronize_session=False)
 
         if rows_updated > 0:
             logger.debug(

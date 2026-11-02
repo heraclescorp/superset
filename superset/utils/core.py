@@ -867,6 +867,9 @@ def pessimistic_connection_handling(some_engine: Engine) -> None:
             # condition, which is based on inspection of the original exception
             # by the dialect in use.
             if err.connection_invalidated:
+                # SQLAlchemy 2 autobegins even this SELECT; clear the invalid
+                # transaction before reconnecting on the same Connection.
+                connection.rollback()  # pylint: disable=consider-using-transaction
                 # run the same SELECT again - the connection will re-validate
                 # itself and establish a new connection.  The disconnect detection
                 # here also causes the whole connection pool to be invalidated
