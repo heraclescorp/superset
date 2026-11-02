@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Reap GTF tasks abandoned by a dead worker or lost before pickup."""
+"""Reap GTF tasks abandoned by a dead worker."""
 
 import logging
 from typing import Any, cast
@@ -35,58 +35,48 @@ from superset.tasks.utils import parse_properties
 logger = logging.getLogger(__name__)
 
 ORPHAN_ERROR_MESSAGE = "Task orphaned: worker heartbeat timed out"
-PENDING_ERROR_MESSAGE = (
-    "Task expired: pending queue wait timed out before worker pickup"
-)
 
 
 class ReapOrphanedTasksCommand(BaseCommand):
-    """Recover stale-heartbeat tasks and, when enabled, expired unclaimed tasks.
+    """Recover tasks abandoned by a worker that stopped refreshing its heartbeat.
 
-    The existing beat job publishes terminal notifications and revokes deliveries
-    without hard-terminating workers. Pending expiry excludes active prerequisite
-    waits and grants a full queue budget after the last prerequisite completes.
-    Its UPDATE rechecks eligibility so a worker claim wins over a stale scan.
+    Run from the ``reap_orphaned_tasks`` beat job. For each orphan (an active task
+    whose liveness heartbeat has gone stale — see ``TaskDAO.find_orphaned``) the
+    command transitions the row to ``FAILURE`` and publishes completion so waiters
+    (sync joiners, DAG dependents, chart-data pollers) unblock, then revokes the
+    Celery job so a redelivered copy cannot run.
+
+    It acts only on tasks with no live worker; a task still being worked on keeps
+    a fresh heartbeat and is left entirely to its own cooperative abort/cleanup.
+    The status transition is an atomic compare-and-swap, so a worker that revives
+    and commits its own terminal status simply makes the reaper's update a no-op.
     """
 
     def run(self) -> int:
         stats_logger: BaseStatsLogger = current_app.config["STATS_LOGGER"]
         timeout = current_app.config["GTF_ORPHAN_TASK_TIMEOUT"]
 
-        candidates: list[tuple[UUID, int | None]] = [
-            (task_uuid, None) for task_uuid in TaskDAO.find_orphaned(timeout)
-        ]
-        pending_timeout = current_app.config.get("GTF_PENDING_TASK_TIMEOUT")
-        if pending_timeout is not None:
-            candidates.extend(
-                (task_uuid, pending_timeout)
-                for task_uuid in TaskDAO.find_expired_pending(pending_timeout)
-            )
+        uuids = TaskDAO.find_orphaned(timeout)
         reaped = 0
-        for task_uuid, pending_timeout in candidates:
+        for task_uuid in uuids:
             # Isolate each task: a transient DB error on one must neither abort the
             # loop nor escape as a non-CommandException (which would skip the
             # retention prune pass that runs after this command).
             try:
-                if self._reap(task_uuid, stats_logger, pending_timeout):
+                if self._reap(task_uuid, stats_logger):
                     reaped += 1
             except Exception:  # noqa: BLE001 pylint: disable=broad-except
                 db.session.rollback()  # pylint: disable=consider-using-transaction
                 stats_logger.incr("gtf.task.reap_error")
-                logger.exception("Failed to reap abandoned task %s", task_uuid)
-        if candidates:
+                logger.exception("Failed to reap orphaned task %s", task_uuid)
+        if uuids:
             logger.info(
-                "Task reaper processed %d task(s), reaped %d", len(candidates), reaped
+                "Orphan reaper processed %d task(s), reaped %d", len(uuids), reaped
             )
         return reaped
 
-    def _reap(
-        self,
-        task_uuid: UUID,
-        stats_logger: BaseStatsLogger,
-        pending_timeout: int | None = None,
-    ) -> bool:
-        """Recover a candidate if its atomic terminal transition succeeds."""
+    def _reap(self, task_uuid: UUID, stats_logger: BaseStatsLogger) -> bool:
+        """Recover one orphaned task; return True if it was transitioned to FAILURE."""
         # Read the current properties so the FAILURE write preserves existing
         # runtime state (private handles, is_abortable, ...) rather than replacing
         # the whole column with just the error fields.
@@ -100,38 +90,32 @@ class ReapOrphanedTasksCommand(BaseCommand):
                 )
             ),
         )
-        properties["error_message"] = (
-            ORPHAN_ERROR_MESSAGE if pending_timeout is None else PENDING_ERROR_MESSAGE
-        )
+        properties["error_message"] = ORPHAN_ERROR_MESSAGE
         # exception_type is internal debug detail → private["framework"]. Build on
         # the existing private subtree so the framework orchestration handles and
         # the task-owned cancel handles are preserved.
         private = cast("dict[str, Any]", dict(properties.get("private") or {}))
         framework = {
             **(private.get("framework") or {}),
-            "exception_type": (
-                "OrphanedTaskError"
-                if pending_timeout is None
-                else "PendingTaskTimeoutError"
-            ),
+            "exception_type": "OrphanedTaskError",
         }
         private["framework"] = framework
         properties["private"] = cast("Any", private)
 
-        if pending_timeout is None:
-            transitioned = TaskDAO.conditional_status_update(
-                task_uuid,
-                TaskStatus.FAILURE,
-                expected_status=list(ACTIVE_STATES),
-                properties=properties,
-                set_ended_at=True,
-            )
-        else:
-            transitioned = TaskDAO.fail_expired_pending(
-                task_uuid, pending_timeout, properties
-            )
-        if not transitioned:
-            db.session.rollback()  # pylint: disable=consider-using-transaction
+        # Claim the terminal transition FIRST, before any destructive side effect.
+        # The CAS is atomic (row-locked) against a worker that merely stalled and
+        # then revived to commit its own terminal status: if that worker wins, this
+        # returns False and we must NOT cancel its (healthy) warehouse query or
+        # revoke its job. Only once we own the FAILURE transition is the task
+        # genuinely orphaned and its query safe to cancel out-of-band.
+        if not TaskDAO.conditional_status_update(
+            task_uuid,
+            TaskStatus.FAILURE,
+            expected_status=list(ACTIVE_STATES),
+            properties=properties,
+            set_ended_at=True,
+        ):
+            # The worker revived and committed a terminal status first.
             return False
 
         db.session.commit()  # pylint: disable=consider-using-transaction
@@ -140,10 +124,7 @@ class ReapOrphanedTasksCommand(BaseCommand):
         # so its Celery job and warehouse query are safe to clean up. The Celery id
         # is a framework handle; the engine cancel handle is a task handle.
         self._revoke(framework.get("celery_task_id"), stats_logger)
-        if pending_timeout is None:
-            self._cancel_orphaned_query(
-                cast("dict[str, Any]", private.get("task") or {})
-            )
+        self._cancel_orphaned_query(cast("dict[str, Any]", private.get("task") or {}))
 
         from superset.tasks.manager import TaskManager
 
@@ -152,14 +133,8 @@ class ReapOrphanedTasksCommand(BaseCommand):
         # A reaped prerequisite fails its dependents' all-success gate, and its
         # status shows on their rows, so refresh those too.
         TaskManager.publish_required_by_changed(task_uuid)
-        if pending_timeout is None:
-            stats_logger.incr("gtf.task.orphan_reaped")
-            logger.warning(
-                "Reaped orphaned task %s (worker heartbeat stale)", task_uuid
-            )
-        else:
-            stats_logger.incr("gtf.task.pending_expired")
-            logger.warning("Expired unclaimed pending task %s", task_uuid)
+        stats_logger.incr("gtf.task.orphan_reaped")
+        logger.warning("Reaped orphaned task %s (worker heartbeat stale)", task_uuid)
         return True
 
     def _revoke(

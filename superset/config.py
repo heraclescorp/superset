@@ -1857,6 +1857,12 @@ class CeleryConfig:  # pylint: disable=too-few-public-methods
         #     "task": "reap_orphaned_tasks",
         #     "schedule": crontab(minute="*", hour="*"),
         # },
+        # Uncomment and set GTF_PENDING_TASK_TIMEOUT to expire unclaimed queue
+        # work. Independent of heartbeat-based reaping and retention pruning.
+        # "expire_pending_tasks": {
+        #     "task": "expire_pending_tasks",
+        #     "schedule": crontab(minute="*", hour="*"),
+        # },
         # Uncomment to enable pruning of the tasks table (retention delete of old
         # terminal rows).
         # "prune_tasks": {
@@ -3328,7 +3334,9 @@ GTF_ORPHAN_TASK_TIMEOUT = 60  # seconds
 # Optional queue-wait limit for PENDING tasks with no claim or heartbeat. Active
 # prerequisites pause this limit; after they all finish, the full budget starts
 # at the later of task creation and the latest prerequisite end. None disables it.
-# Applied by the same reap_orphaned_tasks beat job; values are seconds.
+# Values are seconds. Enable the independent expire_pending_tasks beat schedule
+# as well as this timeout; reap_orphaned_tasks never expires unclaimed queue work.
+# Expiry releases dedup and notifies waiters, but never cancels warehouse queries.
 GTF_PENDING_TASK_TIMEOUT: int | None = None
 
 # ---------------------------------------------------

@@ -39,6 +39,7 @@ from superset.commands.report.exceptions import (
 from superset.commands.report.execute import AsyncExecuteReportScheduleCommand
 from superset.commands.report.log_prune import AsyncPruneReportScheduleLogCommand
 from superset.commands.sql_lab.query import QueryPruneCommand
+from superset.commands.tasks.expire_pending import ExpirePendingTasksCommand
 from superset.commands.tasks.prune import TaskPruneCommand
 from superset.commands.tasks.reap import ReapOrphanedTasksCommand
 from superset.daos.report import ReportScheduleDAO
@@ -307,6 +308,18 @@ def reap_orphaned_tasks(self: Task, **kwargs: Any) -> None:
         ReapOrphanedTasksCommand().run()
     except CommandException as ex:
         logger.exception("An error occurred while reaping orphaned tasks: %s", ex)
+
+
+@celery_app.task(name="expire_pending_tasks", bind=True)
+def expire_pending_tasks(self: Task, **kwargs: Any) -> None:
+    """Expire unclaimed queue work independently of heartbeat recovery/pruning."""
+    stats_logger: BaseStatsLogger = current_app.config["STATS_LOGGER"]
+    stats_logger.incr("expire_pending_tasks")
+
+    try:
+        ExpirePendingTasksCommand().run()
+    except CommandException as ex:
+        logger.exception("An error occurred while expiring pending tasks: %s", ex)
 
 
 @celery_app.task(name="prune_key_value", bind=True)
