@@ -281,9 +281,9 @@ class TaskManager:
         notified. Policy-returned keys are validated against the task's own
         subscriber principals (see ``_authorized_routes``) so a policy can never
         route to another principal. No-op when no coordination backend is
-        configured or the task has no resolvable routing keys; callers must never
-        let a failure here disrupt completion signalling (the interval poll is the
-        backstop).
+        configured or the task has no resolvable routing keys. Delivery is
+        best-effort; REST reconciliation recovers missed terminal state on polling,
+        websocket reconnect, or the browser waiter's final give-up check.
 
         :param task_uuid: public UUID of the task (also carried in the payload)
         :param status: the task's current status
@@ -320,7 +320,7 @@ class TaskManager:
                 # its keys within the task's subscriber principals; if that leaves
                 # none, publish nothing rather than broadening to every tab of the
                 # principal (which would break the policy's intended isolation) —
-                # the interval poll remains the correctness path.
+                # REST reconciliation remains the correctness path.
                 routes = cls._authorized_routes(policy_routes, principal_routes)
                 scope = cls.SCOPE_TAB
             if not routes:
@@ -399,6 +399,10 @@ class TaskManager:
         Best-effort: no-op (returns False) when no coordination backend is configured,
         in which case waiters poll the task row instead.
 
+        Browser fanout is independent of the stream signal: a stream-write error
+        must not suppress a still-working Pub/Sub transport. REST reconciliation
+        and the waiter's metastore predicate remain authoritative on delivery loss.
+
         :param task_uuid: UUID of the completed task
         :param status: Final status of the task
         :returns: True if the signal was emitted, False if no backend / Redis error
@@ -408,22 +412,22 @@ class TaskManager:
         if not CoordinationService.is_backend_defined():
             return False
 
+        signalled = False
+
         try:
             channel = cls.get_completion_channel(task_uuid)
             CoordinationService.notify(channel, status)
             logger.debug("Signalled completion on %s (status=%s)", channel, status)
-            # The tier-1 entity-change nudge for the terminal transition is emitted
-            # by InternalStatusTransitionCommand (post-commit), so it is not
-            # repeated here. Push one targeted fanout message (tier-2) so each
-            # subscribed chart-data client can learn completion detail over the
-            # socket instead of re-polling the REST API.
-            cls.publish_task_status(task_uuid, status)
-            return True
+            signalled = True
         except redis.RedisError as ex:
             # Best-effort: waiters fall back to polling, so a transient Redis
             # error here is not a correctness problem.
             logger.warning("Failed to signal completion for task %s: %s", task_uuid, ex)
-            return False
+        # The status-changing command emits the tier-1 entity-change nudge after
+        # commit. Independently attempt tier-2 subscriber fanout even if the
+        # completion stream failed (for example, a stream-specific Redis error).
+        cls.publish_task_status(task_uuid, status)
+        return signalled
 
     @classmethod
     def wait_for_completion(

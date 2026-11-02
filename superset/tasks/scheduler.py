@@ -368,21 +368,26 @@ def _dag_defer_countdown(retries: int) -> float:
     return base + random.uniform(0, min(base, 1.0))  # noqa: S311
 
 
-def _persist_celery_task_id(task: "TaskModel", celery_task_id: str | None) -> None:
-    """Record the Celery job id on the task so the reaper can revoke it.
+def _persist_celery_task_id(task: "TaskModel", celery_task_id: str | None) -> bool:
+    """Record pickup metadata only while the task is still unclaimed.
 
-    Mutates the in-memory task (so the ``TaskContext`` built later carries the id
-    through its property writes) and commits. Written once when the task is
-    claimed — after the DAG gate has confirmed the prerequisites are met and
-    immediately before the heartbeat/status transition — so the reaper can revoke
-    the running job. A task still deferred on prerequisites carries no Celery id
-    or heartbeat and is simply re-enqueued rather than reaped.
+    Refresh under the same row lock as terminal/subscription writes so an expired
+    or cancelled task cannot have its error or subscriber state overwritten by a
+    worker's stale snapshot. DAG-deferred work never reaches this pickup step.
     """
     if not celery_task_id:
-        return
+        return True
+    db.session.refresh(task, with_for_update=True)
+    if (
+        task.status != TaskStatus.PENDING.value
+        or task.started_at is not None
+        or task.last_heartbeat is not None
+    ):
+        db.session.rollback()  # pylint: disable=consider-using-transaction
+        return False
     task.update_framework_private({"celery_task_id": celery_task_id})
-    # One-shot write at pickup, outside the lifecycle transaction below.
     db.session.commit()  # pylint: disable=consider-using-transaction
+    return True
 
 
 # max_retries=None makes the DAG-defer retries truly unlimited. Celery's
@@ -539,7 +544,8 @@ def _prepare_and_execute_task(
         return {"status": status, "task_uuid": task_uuid}
 
     # Prerequisites satisfied → claim the task and run it under the heartbeat.
-    _persist_celery_task_id(task, self.request.id)
+    if not _persist_celery_task_id(task, self.request.id):
+        return {"status": task.status, "task_uuid": task_uuid}
     app = current_app._get_current_object()  # noqa: SLF001
     with task_heartbeat(task.id, app) as heartbeat:
         return _execute_task_body(task, native_uuid, task_type, args, kwargs, heartbeat)

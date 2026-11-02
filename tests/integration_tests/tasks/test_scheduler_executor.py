@@ -17,21 +17,27 @@
 """Metastore regressions for failures before a GTF worker claims its task."""
 
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
+from flask import current_app
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from superset_core.tasks.types import TaskScope, TaskStatus
 
 from superset import db
+from superset.commands.tasks.cancel import CancelTaskCommand
+from superset.commands.tasks.expire_pending import ExpirePendingTasksCommand
 from superset.daos.tasks import TaskDAO
 from superset.models.tasks import Task
 from superset.tasks import scheduler
 from superset.tasks.utils import naive_utcnow
+from superset.utils.core import override_user
 
 
 @pytest.fixture
@@ -206,3 +212,121 @@ def test_early_failure_atomic_guard_preserves_concurrent_claim(
     manager.publish_completion.assert_not_called()
     manager.publish_entity_change.assert_not_called()
     manager.publish_required_by_changed.assert_not_called()
+
+
+@pytest.mark.parametrize("terminalizer", ["expiry", "force_cancel"])
+@pytest.mark.parametrize("pickup_stage", ["before_metadata", "after_metadata"])
+def test_terminal_transition_during_pickup_preserves_terminal_state(
+    queued_task, monkeypatch, terminalizer, pickup_stage
+) -> None:
+    """A stale worker cannot rewrite terminal errors, subscribers, or heartbeat."""
+    app = current_app._get_current_object()
+    monkeypatch.setitem(app.config, "GTF_PENDING_TASK_TIMEOUT", 360)
+    task = queued_task
+    task.created_on = TaskDAO._db_utcnow() - timedelta(seconds=361)
+    db.session.commit()
+    native, user_id, original_dedup = task.uuid, task.user_id, task.dedup_key
+    original_persist = scheduler._persist_celery_task_id
+    terminal = {}
+
+    def finish_independently():
+        with app.app_context():
+            if terminalizer == "expiry":
+                assert ExpirePendingTasksCommand().run() == 1
+            else:
+                from superset import security_manager
+
+                admin = security_manager.get_user_by_id(user_id)
+                with override_user(admin):
+                    CancelTaskCommand(native, force=True).run()
+            finished = TaskDAO.find_one_or_none(uuid=native, skip_base_filter=True)
+            terminal.update(
+                status=finished.status,
+                properties=finished.properties_dict,
+                ended_at=finished.ended_at,
+                dedup_key=finished.dedup_key,
+            )
+
+    def racing_pickup(loaded, celery_id):
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            if pickup_stage == "before_metadata":
+                pool.submit(finish_independently).result(timeout=15)
+            result = original_persist(loaded, celery_id)
+            if pickup_stage == "after_metadata":
+                pool.submit(finish_independently).result(timeout=15)
+        return result
+
+    replacement = None
+    try:
+        with patch.object(
+            scheduler, "_persist_celery_task_id", side_effect=racing_pickup
+        ):
+            assert _execute(str(native)) == {
+                "status": "failure" if terminalizer == "expiry" else "aborted",
+                "task_uuid": str(native),
+            }
+        TaskDAO.touch_heartbeat(task.id)
+        db.session.refresh(task)
+        assert task.status == terminal["status"]
+        assert task.properties_dict == terminal["properties"]
+        assert task.ended_at == terminal["ended_at"]
+        assert task.dedup_key == terminal["dedup_key"]
+        assert task.last_heartbeat is None
+        assert task.started_at is None
+        replacement = TaskDAO.create_task(
+            task_type=task.task_type,
+            task_key=task.task_key,
+            scope=task.scope,
+            user_id=user_id,
+        )
+        db.session.commit()
+        assert replacement.dedup_key == original_dedup
+    finally:
+        if replacement is not None:
+            db.session.delete(replacement)
+            db.session.commit()
+
+
+def test_force_cancel_cannot_overwrite_expiry_after_its_status_read(
+    queued_task, monkeypatch, login_as, test_client
+) -> None:
+    """The already-committed terminal result wins over a stale cancel request."""
+    app = current_app._get_current_object()
+    monkeypatch.setitem(app.config, "GTF_PENDING_TASK_TIMEOUT", 360)
+    task = queued_task
+    task.created_on = TaskDAO._db_utcnow() - timedelta(seconds=361)
+    db.session.commit()
+    native = task.uuid
+    original_find = TaskDAO.find_one_or_none
+    original_abort = TaskDAO.abort_task
+
+    def expire_independently():
+        with app.app_context():
+            assert ExpirePendingTasksCommand().run() == 1
+
+    def race_abort(*args, **kwargs):
+        first_read = True
+
+        def stale_read(*args, **kwargs):
+            nonlocal first_read
+            loaded = original_find(*args, **kwargs)
+            if first_read:
+                first_read = False
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    pool.submit(expire_independently).result(timeout=15)
+            return loaded
+
+        with patch.object(TaskDAO, "find_one_or_none", side_effect=stale_read):
+            return original_abort(*args, **kwargs)
+
+    login_as("admin")
+    with patch.object(TaskDAO, "abort_task", side_effect=race_abort):
+        response = test_client.post(
+            f"/api/v1/task/{native}/cancel", json={"force": True}
+        )
+    assert response.status_code == 422
+    db.session.refresh(task)
+    assert task.status == TaskStatus.FAILURE.value
+    assert task.properties_dict["private"]["framework"]["exception_type"] == (
+        "PendingTaskTimeoutError"
+    )

@@ -142,7 +142,7 @@ class TaskDAO(BaseDAO[Task]):
 
     @classmethod
     def touch_heartbeat(cls, task_id: int) -> None:
-        """Bump a task's ``last_heartbeat`` to now without touching ``changed_on``.
+        """Bump an active task's heartbeat without touching ``changed_on``.
 
         Called on an interval by the executing worker's heartbeat thread so the
         reaper can tell a live task from an orphaned one. Uses a raw textual
@@ -157,15 +157,20 @@ class TaskDAO(BaseDAO[Task]):
         worker's host clock so the value is comparable to the reaper's scan
         without cross-host skew (see ``find_orphaned``).
         """
-        if (expr := cls._db_utcnow_sql()) is not None:
-            # expr is a fixed per-dialect literal, not user input.
-            sql = f"UPDATE tasks SET last_heartbeat = {expr} WHERE id = :id"  # noqa: S608
-            db.session.execute(sa.text(sql), {"id": task_id})
-        else:
-            db.session.execute(
-                sa.text("UPDATE tasks SET last_heartbeat = :ts WHERE id = :id"),
-                {"ts": naive_utcnow(), "id": task_id},
-            )
+        expr = cls._db_utcnow_sql()
+        parameters: dict[str, Any] = {
+            "id": task_id,
+            "active_states": tuple(ACTIVE_STATES),
+        }
+        if expr is None:
+            expr = ":ts"
+            parameters["ts"] = naive_utcnow()
+        # expr is a fixed per-dialect literal or a bound timestamp, not user input.
+        statement = sa.text(
+            f"UPDATE tasks SET last_heartbeat = {expr} "  # noqa: S608
+            "WHERE id = :id AND status IN :active_states"
+        ).bindparams(sa.bindparam("active_states", expanding=True))
+        db.session.execute(statement, parameters)
         # Deliberate standalone commit: this is a single out-of-band column write,
         # not a unit of work, and must not be wrapped in the ORM transaction flow.
         db.session.commit()  # pylint: disable=consider-using-transaction
@@ -482,6 +487,9 @@ class TaskDAO(BaseDAO[Task]):
         This is a pure data operation. Business logic (subscriber count checks,
         permission validation) is handled by CancelTaskCommand which holds the lock.
 
+        Pending abort uses a conditional transition so a concurrent terminal
+        result cannot be overwritten by the cancellation's earlier status read.
+
         Abort behavior by status:
         - PENDING: Goes directly to ABORTED (always abortable)
         - IN_PROGRESS with is_abortable=True: Goes to ABORTING
@@ -515,7 +523,14 @@ class TaskDAO(BaseDAO[Task]):
 
         # PENDING: Go directly to ABORTED
         if task.status == TaskStatus.PENDING.value:
-            task.set_status(TaskStatus.ABORTED)
+            if not cls.conditional_status_update(
+                task_uuid,
+                TaskStatus.ABORTED,
+                expected_status=TaskStatus.PENDING,
+                set_ended_at=True,
+            ):
+                return None
+            db.session.refresh(task)
             logger.info("Aborted pending task: %s (scope: %s)", task_uuid, task.scope)
             return task
 
