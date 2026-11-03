@@ -22,7 +22,10 @@ from uuid import UUID
 
 from superset_core.tasks.types import TaskStatus
 
-from superset.commands.tasks.reap import ORPHAN_ERROR_MESSAGE, ReapOrphanedTasksCommand
+from superset.commands.tasks.reap import (
+    ORPHAN_ERROR_MESSAGE,
+    ReapOrphanedTasksCommand,
+)
 from superset.utils import json
 
 TEST_UUID = UUID("b8b61b7b-1cd3-4a31-a74a-0a95341afc06")

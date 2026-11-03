@@ -25,6 +25,8 @@ import pytest
 from flask import current_app
 from pandas.api.types import is_datetime64_dtype
 from pytest_mock import MockerFixture
+from sqlalchemy import create_engine, select
+from sqlalchemy.exc import DBAPIError
 
 from superset.exceptions import SupersetException
 from superset.utils.core import (
@@ -50,6 +52,7 @@ from superset.utils.core import (
     normalize_dttm_col,
     parse_boolean_string,
     parse_js_uri_path_item,
+    pessimistic_connection_handling,
     QueryObjectFilterClause,
     QuerySource,
     remove_extra_adhoc_filters,
@@ -71,6 +74,56 @@ EXTRA_FILTER: QueryObjectFilterClause = {
     "val": "bar",
     "isExtra": True,
 }
+
+
+@pytest.mark.parametrize("disconnect", [False, True])
+def test_pessimistic_connection_handling_recovers_initial_disconnect(
+    disconnect: bool,
+) -> None:
+    """A real autobegun ping must rollback before reconnecting after a disconnect."""
+    engine = create_engine("sqlite://", future=True)
+    pessimistic_connection_handling(engine)
+    do_execute = engine.dialect.do_execute
+    ping_attempts = 0
+
+    def execute(
+        cursor: Any, statement: str, parameters: Any, context: Any = None
+    ) -> None:
+        nonlocal ping_attempts
+        ping_attempts += 1
+        if disconnect and ping_attempts == 1:
+            cursor.connection.close()
+        do_execute(cursor, statement, parameters, context)
+
+    try:
+        with patch.object(engine.dialect, "do_execute", side_effect=execute):
+            with engine.connect() as connection:
+                assert ping_attempts == (2 if disconnect else 1)
+                assert not connection.in_transaction()
+                assert connection.scalar(select(1)) == 1
+                assert connection.exec_driver_sql("PRAGMA foreign_keys").scalar() == 1
+    finally:
+        engine.dispose()
+
+
+def test_pessimistic_connection_handling_does_not_retry_other_db_errors() -> None:
+    """Only a disconnect may retry the connectivity SELECT."""
+    engine = create_engine("sqlite://", future=True)
+    pessimistic_connection_handling(engine)
+
+    def execute(cursor: Any, *args: Any, **kwargs: Any) -> None:
+        cursor.execute("SELECT missing_column")
+
+    try:
+        with patch.object(
+            engine.dialect, "do_execute", side_effect=execute
+        ) as execute_mock:
+            with pytest.raises(DBAPIError) as raised:
+                engine.connect()
+            assert not raised.value.connection_invalidated
+            execute_mock.assert_called_once()
+    finally:
+        engine.dispose()
 
 
 @pytest.mark.parametrize(

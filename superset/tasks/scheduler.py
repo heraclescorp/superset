@@ -39,6 +39,7 @@ from superset.commands.report.exceptions import (
 from superset.commands.report.execute import AsyncExecuteReportScheduleCommand
 from superset.commands.report.log_prune import AsyncPruneReportScheduleLogCommand
 from superset.commands.sql_lab.query import QueryPruneCommand
+from superset.commands.tasks.expire_pending import ExpirePendingTasksCommand
 from superset.commands.tasks.prune import TaskPruneCommand
 from superset.commands.tasks.reap import ReapOrphanedTasksCommand
 from superset.daos.report import ReportScheduleDAO
@@ -63,6 +64,7 @@ from superset.tasks.heartbeat import (
 )
 from superset.tasks.manager import TaskManager
 from superset.tasks.registry import TaskRegistry
+from superset.tasks.utils import error_update, merge_properties
 from superset.utils.core import LoggerLevel
 from superset.utils.log import get_logger_from_status
 from superset.utils.report_execution import get_report_task_timeout_options
@@ -308,6 +310,18 @@ def reap_orphaned_tasks(self: Task, **kwargs: Any) -> None:
         logger.exception("An error occurred while reaping orphaned tasks: %s", ex)
 
 
+@celery_app.task(name="expire_pending_tasks", bind=True)
+def expire_pending_tasks(self: Task, **kwargs: Any) -> None:
+    """Expire unclaimed queue work independently of heartbeat recovery/pruning."""
+    stats_logger: BaseStatsLogger = current_app.config["STATS_LOGGER"]
+    stats_logger.incr("expire_pending_tasks")
+
+    try:
+        ExpirePendingTasksCommand().run()
+    except CommandException as ex:
+        logger.exception("An error occurred while expiring pending tasks: %s", ex)
+
+
 @celery_app.task(name="prune_key_value", bind=True)
 def prune_key_value(
     self: Task,
@@ -354,23 +368,26 @@ def _dag_defer_countdown(retries: int) -> float:
     return base + random.uniform(0, min(base, 1.0))  # noqa: S311
 
 
-def _persist_celery_task_id(task: "TaskModel", celery_task_id: str | None) -> None:
-    """Record the Celery job id on the task so the reaper can revoke it.
+def _persist_celery_task_id(task: "TaskModel", celery_task_id: str | None) -> bool:
+    """Record pickup metadata only while the task is still unclaimed.
 
-    Mutates the in-memory task (so the ``TaskContext`` built later carries the id
-    through its property writes) and commits. Written once when the task is
-    claimed — after the DAG gate has confirmed the prerequisites are met and
-    immediately before the heartbeat/status transition — so the reaper can revoke
-    the running job. A task still deferred on prerequisites carries no Celery id
-    or heartbeat and is simply re-enqueued rather than reaped. The id is dropped
-    on the terminal transition along with the rest of ``properties``, which is
-    fine — only ACTIVE tasks are ever reaped.
+    Refresh under the same row lock as terminal/subscription writes so an expired
+    or cancelled task cannot have its error or subscriber state overwritten by a
+    worker's stale snapshot. DAG-deferred work never reaches this pickup step.
     """
     if not celery_task_id:
-        return
+        return True
+    db.session.refresh(task, with_for_update=True)
+    if (
+        task.status != TaskStatus.PENDING.value
+        or task.started_at is not None
+        or task.last_heartbeat is not None
+    ):
+        db.session.rollback()  # pylint: disable=consider-using-transaction
+        return False
     task.update_framework_private({"celery_task_id": celery_task_id})
-    # One-shot write at pickup, outside the lifecycle transaction below.
     db.session.commit()  # pylint: disable=consider-using-transaction
+    return True
 
 
 # max_retries=None makes the DAG-defer retries truly unlimited. Celery's
@@ -402,10 +419,66 @@ def execute_task(
     :param kwargs: Keyword arguments for the task function
     :returns: Dict with status and task_uuid
     """
+    native_uuid = UUID(task_uuid)
+    celery_task_id = self.request.id
+    try:
+        return _prepare_and_execute_task(self, native_uuid, task_type, args, kwargs)
+    except Retry:
+        raise
+    except Exception as ex:
+        logger.exception(
+            "Task uuid=%s failed outside the executor lifecycle (celery_task_id=%s)",
+            native_uuid,
+            celery_task_id,
+        )
+        try:
+            db.session.rollback()  # pylint: disable=consider-using-transaction
+            if _fail_unclaimed_task(native_uuid, ex):
+                return {"status": TaskStatus.FAILURE.value, "task_uuid": task_uuid}
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Could not persist early failure for task uuid=%s "
+                "(celery_task_id=%s); leaving it for task recovery",
+                native_uuid,
+                celery_task_id,
+            )
+            db.session.rollback()  # pylint: disable=consider-using-transaction
+        raise
+
+
+def _fail_unclaimed_task(native_uuid: UUID, exception: Exception) -> bool:
+    """Fail only queued work, preserving persisted handles and subscription state."""
+    task = TaskDAO.find_one_or_none(uuid=native_uuid, skip_base_filter=True)
+    if not task:
+        return False
+    updated = TaskDAO.conditional_status_update(
+        task_uuid=native_uuid,
+        new_status=TaskStatus.FAILURE,
+        expected_status=TaskStatus.PENDING,
+        require_unclaimed=True,
+        properties=merge_properties(task.properties_dict, error_update(exception)),
+        set_ended_at=True,
+    )
+    db.session.commit()  # pylint: disable=consider-using-transaction
+    if updated:
+        current_app.config["STATS_LOGGER"].incr("gtf.task.transition.failure")
+        TaskManager.publish_entity_change(native_uuid)
+        TaskManager.publish_required_by_changed(native_uuid)
+        TaskManager.publish_completion(native_uuid, TaskStatus.FAILURE.value)
+    return updated
+
+
+def _prepare_and_execute_task(
+    self: Any,
+    native_uuid: UUID,
+    task_type: str,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> dict[str, Any]:
+    """Resolve prerequisites and claim work before entering the executor lifecycle."""
     from superset.commands.tasks.internal_update import InternalStatusTransitionCommand
 
-    # Convert string UUID to native UUID (Celery deserializes as string)
-    native_uuid = UUID(task_uuid)
+    task_uuid = str(native_uuid)
 
     # Internal executor path: load the task Celery was dispatched to run,
     # keyed on the UUID passed at enqueue time, not a user-requested
@@ -415,6 +488,9 @@ def execute_task(
     if not task:
         logger.error("Task %s not found in metastore", task_uuid)
         return {"status": "error", "message": "Task not found"}
+
+    if task.status in TERMINAL_STATES or task.status == TaskStatus.IN_PROGRESS.value:
+        return {"status": task.status, "task_uuid": task_uuid}
 
     # Abort-before-claim: a task aborted while queued or DAG-deferred finalizes
     # here (this also stops the defer loop below from retrying an aborted task).
@@ -455,32 +531,9 @@ def execute_task(
             countdown,
             self.request.retries,
         )
-        # Re-sends the same task id/args/kwargs. self.retry raises the Retry
-        # sentinel Celery expects; if it instead fails to publish the replacement
-        # message (broker down), that would escape as a non-Retry exception and
-        # leave this task PENDING with no heartbeat — unreapable, the same shape as
-        # a failed enqueue. So only the Retry sentinel is allowed to propagate;
-        # any other error fails the task terminally.
-        try:
-            raise self.retry(countdown=countdown, max_retries=None)
-        except Retry:
-            raise
-        except Exception:  # noqa: BLE001  pylint: disable=broad-except
-            logger.exception(
-                "Failed to defer task %s (uuid=%s); failing it so it is not "
-                "stranded PENDING",
-                task_type,
-                task_uuid,
-            )
-            if InternalStatusTransitionCommand(
-                task_uuid=native_uuid,
-                new_status=TaskStatus.FAILURE,
-                expected_status=[TaskStatus.PENDING, TaskStatus.ABORTING],
-                set_ended_at=True,
-                properties={"error_message": "Failed to defer task for execution"},
-            ).run():
-                TaskManager.publish_completion(native_uuid, TaskStatus.FAILURE.value)
-            return {"status": TaskStatus.FAILURE.value, "task_uuid": task_uuid}
+        # Retry is control flow, not failure. A broker publish error instead
+        # reaches the outer boundary and fails only a still-unclaimed task.
+        raise self.retry(countdown=countdown, max_retries=None)
     if unmet is not None:
         # A prerequisite ended non-success (unmet is that Task): fail without
         # running the body. The DAG_WAITING sentinel was handled above, so this is
@@ -491,7 +544,8 @@ def execute_task(
         return {"status": status, "task_uuid": task_uuid}
 
     # Prerequisites satisfied → claim the task and run it under the heartbeat.
-    _persist_celery_task_id(task, self.request.id)
+    if not _persist_celery_task_id(task, self.request.id):
+        return {"status": task.status, "task_uuid": task_uuid}
     app = current_app._get_current_object()  # noqa: SLF001
     with task_heartbeat(task.id, app) as heartbeat:
         return _execute_task_body(task, native_uuid, task_type, args, kwargs, heartbeat)

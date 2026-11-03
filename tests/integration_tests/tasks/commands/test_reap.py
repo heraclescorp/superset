@@ -18,10 +18,14 @@
 from datetime import timedelta
 from unittest.mock import patch
 
+from flask import current_app
 from superset_core.tasks.types import TaskScope, TaskStatus
 
 from superset import db
-from superset.commands.tasks.reap import ORPHAN_ERROR_MESSAGE, ReapOrphanedTasksCommand
+from superset.commands.tasks.reap import (
+    ORPHAN_ERROR_MESSAGE,
+    ReapOrphanedTasksCommand,
+)
 from superset.daos.tasks import TaskDAO
 from superset.models.tasks import Task
 from superset.tasks.utils import naive_utcnow
@@ -168,3 +172,43 @@ def test_reap_cancels_orphaned_query_when_handle_present(
         assert orphan.status == TaskStatus.FAILURE.value
     finally:
         _cleanup(orphan)
+
+
+def test_orphan_reaper_never_expires_unclaimed_pending_with_timeout_enabled(
+    app_context, get_user, login_as, monkeypatch
+) -> None:
+    """Pending timeout configuration cannot broaden heartbeat-only recovery."""
+    login_as("admin")
+    admin = get_user("admin")
+    pending = _make_task(
+        admin, "unclaimed_not_orphaned", TaskStatus.PENDING, celery_task_id="queued"
+    )
+    pending.created_on = naive_utcnow() - timedelta(hours=1)
+    db.session.commit()
+    original_dedup_key = pending.dedup_key
+    monkeypatch.setitem(current_app.config, "GTF_PENDING_TASK_TIMEOUT", 1800)
+    try:
+        with (
+            patch("superset.commands.tasks.reap.celery_app") as celery,
+            patch("superset.tasks.manager.TaskManager.publish_completion") as publish,
+            patch("superset.tasks.manager.TaskManager.publish_entity_change") as entity,
+            patch(
+                "superset.tasks.manager.TaskManager.publish_required_by_changed"
+            ) as dependents,
+        ):
+            assert pending.uuid in TaskDAO.find_expired_pending(1800)
+            assert ReapOrphanedTasksCommand().run() == 0
+            celery.control.revoke.assert_not_called()
+            publish.assert_not_called()
+            entity.assert_not_called()
+            dependents.assert_not_called()
+
+        db.session.refresh(pending)
+        assert pending.status == TaskStatus.PENDING.value
+        assert pending.started_at is None
+        assert pending.last_heartbeat is None
+        assert pending.ended_at is None
+        assert pending.dedup_key == original_dedup_key
+        assert "error_message" not in pending.properties_dict
+    finally:
+        _cleanup(pending)

@@ -142,7 +142,7 @@ class TaskDAO(BaseDAO[Task]):
 
     @classmethod
     def touch_heartbeat(cls, task_id: int) -> None:
-        """Bump a task's ``last_heartbeat`` to now without touching ``changed_on``.
+        """Bump an active task's heartbeat without touching ``changed_on``.
 
         Called on an interval by the executing worker's heartbeat thread so the
         reaper can tell a live task from an orphaned one. Uses a raw textual
@@ -157,15 +157,20 @@ class TaskDAO(BaseDAO[Task]):
         worker's host clock so the value is comparable to the reaper's scan
         without cross-host skew (see ``find_orphaned``).
         """
-        if (expr := cls._db_utcnow_sql()) is not None:
-            # expr is a fixed per-dialect literal, not user input.
-            sql = f"UPDATE tasks SET last_heartbeat = {expr} WHERE id = :id"  # noqa: S608
-            db.session.execute(sa.text(sql), {"id": task_id})
-        else:
-            db.session.execute(
-                sa.text("UPDATE tasks SET last_heartbeat = :ts WHERE id = :id"),
-                {"ts": naive_utcnow(), "id": task_id},
-            )
+        expr = cls._db_utcnow_sql()
+        parameters: dict[str, Any] = {
+            "id": task_id,
+            "active_states": tuple(ACTIVE_STATES),
+        }
+        if expr is None:
+            expr = ":ts"
+            parameters["ts"] = naive_utcnow()
+        # expr is a fixed per-dialect literal or a bound timestamp, not user input.
+        statement = sa.text(
+            f"UPDATE tasks SET last_heartbeat = {expr} "  # noqa: S608
+            "WHERE id = :id AND status IN :active_states"
+        ).bindparams(sa.bindparam("active_states", expanding=True))
+        db.session.execute(statement, parameters)
         # Deliberate standalone commit: this is a single out-of-band column write,
         # not a unit of work, and must not be wrapped in the ORM transaction flow.
         db.session.commit()  # pylint: disable=consider-using-transaction
@@ -199,6 +204,84 @@ class TaskDAO(BaseDAO[Task]):
             .all()
         )
         return [uuid for (uuid,) in rows]
+
+    @classmethod
+    def _expired_pending_filter(cls, stale_before: datetime) -> ColumnElement[bool]:
+        """Share the queue-age and prerequisite guard between scan and UPDATE."""
+        # GROUP BY keeps this derived table materialized on MySQL, where an
+        # UPDATE cannot otherwise read its own target table in a subquery.
+        blocked = (
+            sa.select(TaskDependency.task_id)
+            .join(Task, Task.id == TaskDependency.depends_on_task_id)
+            .filter(
+                sa.or_(
+                    Task.status.notin_(TERMINAL_STATES),
+                    sa.func.coalesce(Task.ended_at, Task.changed_on, Task.created_on)
+                    >= stale_before,
+                )
+            )
+            .group_by(TaskDependency.task_id)
+            .subquery()
+        )
+        return sa.and_(
+            Task.status == TaskStatus.PENDING.value,
+            Task.started_at.is_(None),
+            Task.last_heartbeat.is_(None),
+            Task.created_on < stale_before,
+            Task.id.notin_(sa.select(blocked.c.task_id)),
+        )
+
+    @classmethod
+    def find_expired_pending(cls, pending_timeout_seconds: int) -> list[UUID]:
+        """Find unclaimed tasks whose runnable queue time exceeded the timeout.
+
+        Active prerequisites suspend expiry. Once all prerequisites are terminal,
+        the queue budget starts at the later of creation and their latest end.
+        Legacy terminal rows lacking ended_at use their last change/creation time.
+        Failed prerequisites receive the same bounded budget, so lost deliveries
+        cannot strand their dependents indefinitely.
+        """
+        stale_before = cls._db_utcnow() - timedelta(seconds=pending_timeout_seconds)
+        rows = (
+            db.session.query(Task.uuid)
+            .filter(cls._expired_pending_filter(stale_before))
+            .all()
+        )
+        return [uuid for (uuid,) in rows]
+
+    @classmethod
+    def fail_expired_pending(
+        cls,
+        task_uuid: UUID,
+        pending_timeout_seconds: int,
+        properties: TaskProperties,
+    ) -> bool:
+        """Fail a pending candidate only if its full expiry guard still holds.
+
+        Recheck queue age, prerequisites, status, claim and heartbeat in the UPDATE
+        itself; a candidate scan is not ownership of a terminal transition.
+        """
+        properties = cls._with_current_subscription_state(task_uuid, properties)
+        now = cls._db_utcnow()
+        rows_updated = (
+            db.session.query(Task)
+            .filter(
+                Task.uuid == task_uuid,
+                cls._expired_pending_filter(
+                    now - timedelta(seconds=pending_timeout_seconds)
+                ),
+            )
+            .update(
+                {
+                    "status": TaskStatus.FAILURE.value,
+                    "properties": json.dumps(properties),
+                    "ended_at": now,
+                    "dedup_key": get_finished_dedup_key(task_uuid),
+                },
+                synchronize_session=False,
+            )
+        )
+        return rows_updated > 0
 
     @classmethod
     def get_statuses_changed_since(
@@ -404,6 +487,9 @@ class TaskDAO(BaseDAO[Task]):
         This is a pure data operation. Business logic (subscriber count checks,
         permission validation) is handled by CancelTaskCommand which holds the lock.
 
+        Pending abort uses a conditional transition so a concurrent terminal
+        result cannot be overwritten by the cancellation's earlier status read.
+
         Abort behavior by status:
         - PENDING: Goes directly to ABORTED (always abortable)
         - IN_PROGRESS with is_abortable=True: Goes to ABORTING
@@ -437,7 +523,14 @@ class TaskDAO(BaseDAO[Task]):
 
         # PENDING: Go directly to ABORTED
         if task.status == TaskStatus.PENDING.value:
-            task.set_status(TaskStatus.ABORTED)
+            if not cls.conditional_status_update(
+                task_uuid,
+                TaskStatus.ABORTED,
+                expected_status=TaskStatus.PENDING,
+                set_ended_at=True,
+            ):
+                return None
+            db.session.refresh(task)
             logger.info("Aborted pending task: %s (scope: %s)", task_uuid, task.scope)
             return task
 
@@ -850,6 +943,7 @@ class TaskDAO(BaseDAO[Task]):
         properties: TaskProperties | None = None,
         set_started_at: bool = False,
         set_ended_at: bool = False,
+        require_unclaimed: bool = False,
     ) -> bool:
         """
         Atomically update task status only if current status matches expected.
@@ -870,6 +964,7 @@ class TaskDAO(BaseDAO[Task]):
         :param properties: Optional properties to update atomically with status
         :param set_started_at: If True, also set started_at to current timestamp
         :param set_ended_at: If True, also set ended_at to current timestamp
+        :param require_unclaimed: Require both started_at and last_heartbeat NULL
         :returns: True if status was updated (expected matched), False otherwise
         """
         # Normalize status values
@@ -911,12 +1006,15 @@ class TaskDAO(BaseDAO[Task]):
         if new_status_val in TERMINAL_STATES:
             update_values["dedup_key"] = get_finished_dedup_key(task_uuid)
 
-        # Atomic compare-and-swap: only update if status matches expected
-        rows_updated = (
-            db.session.query(Task)
-            .filter(Task.uuid == task_uuid, Task.status.in_(expected_vals))
-            .update(update_values, synchronize_session=False)
+        # Atomic compare-and-swap: only update if all ownership guards still hold.
+        query = db.session.query(Task).filter(
+            Task.uuid == task_uuid, Task.status.in_(expected_vals)
         )
+        if require_unclaimed:
+            query = query.filter(
+                Task.started_at.is_(None), Task.last_heartbeat.is_(None)
+            )
+        rows_updated = query.update(update_values, synchronize_session=False)
 
         if rows_updated > 0:
             logger.debug(
