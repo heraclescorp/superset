@@ -144,6 +144,7 @@ athena = ["pyathena[pandas]>=3.35.4, <4"]
 # unresolved SQLAlchemy 2.0 break (upstream issue #43). See
 # superset/db_engine_specs/aurora.py's known_incompatibilities metadata.
 aurora-data-api = ["preset-sqlalchemy-aurora-data-api>=0.2.8,<0.3"]
+aws-runtime-secrets = ["boto3==1.42.39"]
 bigquery = [
     "pandas-gbq>=0.35.2",
     # 1.17.1 is likely the final release: googleapis/python-bigquery-sqlalchemy
