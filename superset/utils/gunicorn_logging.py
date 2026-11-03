@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Gunicorn logger selected through --logger-class; retains configured levels."""
+"""Gunicorn JSON logging with the configured level for server and access logs."""
 
 from typing import Any
 
@@ -26,5 +26,6 @@ from superset.utils.logging_configurator import configure_json_logging
 class JsonGunicornLogger(Logger):
     def setup(self, cfg: Any) -> None:
         super().setup(cfg)
+        self.access_log.setLevel(self.loglevel)
         configure_json_logging(self.error_log)
         configure_json_logging(self.access_log)

@@ -44,7 +44,6 @@ from superset.utils.date_parser import parse_human_datetime
 from superset.utils.webdriver import _browser_manager, WebDriverPlaywright
 
 logger: logging.Logger = get_task_logger(__name__)
-logger.setLevel(logging.INFO)
 
 
 @dataclass(frozen=True)

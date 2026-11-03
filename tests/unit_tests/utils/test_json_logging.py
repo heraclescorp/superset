@@ -17,8 +17,14 @@
 import io
 import logging
 
+import pytest
+from flask.config import Config
+
 from superset.utils import json
-from superset.utils.logging_configurator import configure_json_logging
+from superset.utils.logging_configurator import (
+    configure_json_logging,
+    DefaultLoggingConfigurator,
+)
 
 
 def logger_with_output() -> tuple[logging.Logger, io.StringIO]:
@@ -85,3 +91,56 @@ def test_stack_info_and_task_metadata_stay_with_the_record() -> None:
     assert "test_stack_info_and_task_metadata" in record["message"]
     assert record["metadata"]["task_id"] == "task-123"
     assert record["metadata"]["task_name"] == "example.task"
+
+
+def test_disabling_fab_silencing_restores_debug_after_a_silenced_app(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = logging.getLogger()
+    logger = logging.getLogger("flask_appbuilder")
+    stream = io.StringIO()
+    monkeypatch.setattr(root, "level", root.level)
+    monkeypatch.setattr(logger, "level", logging.ERROR)
+    monkeypatch.setattr(logger, "handlers", [logging.StreamHandler(stream)])
+    monkeypatch.setattr(logger, "propagate", False)
+    config = Config(".")
+    config.update(
+        SILENCE_FAB=False,
+        LOG_LEVEL="DEBUG",
+        LOG_FORMAT="%(message)s",
+        ENABLE_TIME_ROTATE=False,
+    )
+
+    DefaultLoggingConfigurator().configure_logging(config, False)
+    logger.debug("permission diagnostic")
+
+    assert stream.getvalue() == "permission diagnostic\n"
+
+
+@pytest.mark.parametrize("level", ["debug", "info"])
+def test_gunicorn_access_logs_honor_the_configured_level(
+    level: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from gunicorn.config import Config as GunicornConfig
+
+    from superset.utils.gunicorn_logging import JsonGunicornLogger
+
+    for name in ("gunicorn.error", "gunicorn.access"):
+        logger = logging.getLogger(name)
+        monkeypatch.setattr(logger, "handlers", [])
+        monkeypatch.setattr(logger, "level", logger.level)
+        monkeypatch.setattr(logger, "propagate", logger.propagate)
+    config = GunicornConfig()
+    config.set("loglevel", level)
+    config.set("accesslog", "-")
+    server_logger = JsonGunicornLogger(config)
+
+    server_logger.access_log.debug("access debug diagnostic")
+    server_logger.access_log.info("access request")
+
+    records = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert [record["message"] for record in records] == (
+        ["access debug diagnostic", "access request"]
+        if level == "debug"
+        else ["access request"]
+    )

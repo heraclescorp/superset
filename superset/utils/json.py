@@ -32,7 +32,6 @@ from simplejson import JSONDecodeError
 from superset.constants import PASSWORD_MASK
 from superset.utils.dates import datetime_to_epoch, EPOCH
 
-logging.getLogger("MARKDOWN").setLevel(logging.INFO)
 logger = logging.getLogger(__name__)
 
 
