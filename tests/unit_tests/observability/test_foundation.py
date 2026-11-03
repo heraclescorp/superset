@@ -281,13 +281,13 @@ def test_explicit_outcome_and_logger_ignores_root_error_level(
     with operation("celery.task") as scope:
         scope.set_attribute("outcome", "retry")
     emit_event(
-        "warehouse.query.enriched",
-        event_id="warehouse-query-v1-stable",
+        "sql.execute.finished",
+        event_id="sql-statement-stable",
         snowflake_query_id="native-id",
     )
     records = [json.loads(line) for line in stream.getvalue().splitlines()]
     assert records[1]["metadata"]["outcome"] == "retry"
-    assert records[-1]["metadata"]["event_id"] == "warehouse-query-v1-stable"
+    assert records[-1]["metadata"]["event_id"] == "sql-statement-stable"
     assert events._LOGGER.propagate is False
 
 
@@ -304,12 +304,13 @@ def test_identifiers_do_not_grow_metric_series_and_unknown_instruments_are_rejec
             chart_id=identifier,
         )
         gauge(
-            "warehouse.own_queries.window_count",
+            "db.pool.checked_out",
             identifier,
-            source="observability",
+            role="warehouse",
             db_system="snowflake",
-            metric_scope="own_user",
-            window_seconds=900,
+            request_actor_user_id=identifier,
+            statement_id=f"statement-{identifier}",
+            snowflake_query_id=f"native-query-{identifier}",
         )
         increment(f"user_{identifier}")
     state.export_once()
@@ -319,14 +320,13 @@ def test_identifiers_do_not_grow_metric_series_and_unknown_instruments_are_rejec
     assert points[0].as_int == 500
     assert not any(name.startswith("user_") for name in metrics)
     assert attribute_dict(points[0].attributes) == {"consumer_action": "join"}
-    assert (
-        attribute_dict(
-            metrics["superset_warehouse_own_queries_window_count"]
-            .gauge.data_points[0]
-            .attributes
-        )["window_seconds"]
-        == 900
-    )
+    gauge_points = metrics["superset_db_pool_checked_out"].gauge.data_points
+    assert len(gauge_points) == 1
+    assert gauge_points[0].as_int == 499
+    assert attribute_dict(gauge_points[0].attributes) == {
+        "role": "warehouse",
+        "db_system": "snowflake",
+    }
     assert metric_attributes(
         {"queue_name": "private-customer-42", "task_type": "private-user"}
     ) == {"otel.metric.overflow": True, "task_type": "other"}
@@ -735,18 +735,17 @@ def test_asset_and_configured_queue_gauges_do_not_collapse(
     configure_metric_queues(["custom.fast", "custom.slow"])
     for warehouse, database, count in (("DASH WH", 1, 3), ("REPORT_WH", 2, 7)):
         gauge(
-            "warehouse.own_queries.window_count",
+            "db.pool.checked_out",
             count,
             warehouse_name=warehouse,
             database_id=database,
-            metric_scope="own_user",
-            window_seconds=900,
+            role="warehouse",
         )
     gauge("celery.queue.depth", 2, queue_name="custom.fast", state="ready")
     gauge("celery.queue.depth", 9, queue_name="custom.slow", state="ready")
     state.export_once()
     metrics = metric_map(receiver)
-    points = metrics["superset_warehouse_own_queries_window_count"].gauge.data_points
+    points = metrics["superset_db_pool_checked_out"].gauge.data_points
     assert {
         (
             attribute_dict(point.attributes)["warehouse_name"],
@@ -802,7 +801,7 @@ def test_standalone_process_is_env_only_and_idempotent(collector: Any) -> None:
     environment = os.environ.copy()
     environment.update(
         SUPERSET_OBSERVABILITY_ENABLED="true",
-        SUPERSET_OBSERVABILITY_POOL="warehouse-enricher",
+        SUPERSET_OBSERVABILITY_POOL="beat",
         SUPERSET_OBSERVABILITY_EXPORT_TIMEOUT_SECONDS="0.1",
         OTEL_EXPORTER_OTLP_ENDPOINT=f"http://127.0.0.1:{port}",
         OTEL_EXPORTER_OTLP_PROTOCOL="grpc",
@@ -815,9 +814,9 @@ def forbidden(*args, **kwargs):
 superset.create_app = forbidden
 from superset.observability import init_process, is_enabled
 from superset.observability import runtime
-init_process(role='warehouse-enricher')
+init_process(role='beat')
 first = runtime.get_runtime()
-init_process(role='warehouse-enricher')
+init_process(role='beat')
 assert first is runtime.get_runtime()
 assert first.pid == os.getpid()
 print(json.dumps({
@@ -832,7 +831,7 @@ print(json.dumps({
         check=True,
         timeout=20,
     )
-    assert json.loads(result.stdout) == {"enabled": True, "pool": "warehouse-enricher"}
+    assert json.loads(result.stdout) == {"enabled": True, "pool": "beat"}
 
 
 def test_nonfinite_or_oversized_numbers_cannot_change_caller_results(

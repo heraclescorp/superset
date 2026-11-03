@@ -259,7 +259,7 @@ def test_unauthorized_or_inconsistent_assets_are_silently_dropped(
         {"chart_id": "7"},
         {"phase": ["load"]},
         {"outcome": {"success": True}},
-        {"event_name": "warehouse.query"},
+        {"event_name": "sql.execute"},
         {"browser_event_id": "secret\nSELECT private"},
         {"browser_view_id": "x" * 1000},
         {"browser_load_id": None},

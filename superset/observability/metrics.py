@@ -132,13 +132,6 @@ GAUGES = {
     "db.pool.checked_out": "superset_db_pool_checked_out",
     "db.pool.size": "superset_db_pool_size",
     "db.pool.overflow": "superset_db_pool_overflow",
-    "warehouse.own_queries.window_count": "superset_warehouse_own_queries_window_count",
-    "warehouse.own_queries.window_duration_seconds": (
-        "superset_warehouse_own_queries_window_duration_seconds"
-    ),
-    "warehouse.own_queries.window_duration_known_count": (
-        "superset_warehouse_own_queries_window_duration_known_count"
-    ),
 }
 _DIMENSIONS: dict[str, frozenset[str]] = {
     "operation": OPERATIONS,
@@ -214,13 +207,6 @@ _DIMENSIONS: dict[str, frozenset[str]] = {
             "active",
             "reserved",
             "scheduled",
-            "total_elapsed",
-            "compilation",
-            "execution",
-            "queued_overload",
-            "queued_provisioning",
-            "queued_repair",
-            "transaction_blocked",
             "browser",
             "pdf",
             "tabular",
@@ -267,7 +253,6 @@ _DIMENSIONS: dict[str, frozenset[str]] = {
             "reports",
             "control",
             "beat",
-            "warehouse-enricher",
         )
     ),
     "error_category": frozenset(
@@ -395,7 +380,6 @@ _DIMENSIONS: dict[str, frozenset[str]] = {
         }
     ),
     "snapshot_kind": frozenset({"tasks", "broker", "workers", "metastore"}),
-    "metric_scope": frozenset({"own_user"}),
     "statement_type": frozenset(
         {"select", "ddl", "dml", "session", "metadata", "other"}
     ),
@@ -442,19 +426,6 @@ def metric_attributes(attributes: Mapping[str, object]) -> dict[str, str | bool 
     for key in _BOOL_DIMENSIONS:
         if type(attributes.get(key)) is bool:
             result[key] = attributes[key]  # type: ignore[assignment]
-    if attributes.get("window_seconds") in {
-        60,
-        300,
-        600,
-        900,
-        1800,
-        3600,
-        7200,
-        21600,
-        43200,
-        86400,
-    }:
-        result["window_seconds"] = int(attributes["window_seconds"])  # type: ignore[arg-type]
     if isinstance(attributes.get("legacy_key"), str):
         result["legacy_key"] = canonical_legacy_key(attributes["legacy_key"])
     for key, value in sanitize(

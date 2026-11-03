@@ -21,7 +21,7 @@ Each attempted statement gets an independent identifier before reaching the driv
 Native query IDs are captured before the cursor can be reused; cancellation handles
 are deliberately never consulted. QUERY_TAG uses request-local connector statement
 parameters, so pooled sessions retain their operator-configured tags and transaction
-state. Warehouse enrichment joins these events by statement/native query ID.
+state.
 """
 
 from __future__ import annotations

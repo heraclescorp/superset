@@ -84,7 +84,7 @@ def initialize(app: Flask) -> None:
     register_http(app)
 
     # These explicit owner entrypoints import no Flask app and never create an
-    # SDK provider. Importing them here also keeps standalone warehouse tools
+    # SDK provider. Importing them here keeps standalone process instrumentation
     # independent of Superset's Celery/ORM initialization.
     from superset.observability.browser import register_browser
     from superset.observability.lifecycle import register_lifecycle

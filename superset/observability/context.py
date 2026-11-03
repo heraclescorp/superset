@@ -109,13 +109,10 @@ _TOKEN_KEYS = frozenset(
         "browser_event",
         "browser_event_name",
         "trust",
-        "metric_scope",
-        "native_status",
         "role",
         "cache_backend",
         "cache_type",
         "cache_layer",
-        "query_type",
         "statement_type",
         "task_origin",
         "strategy",
@@ -144,9 +141,6 @@ _NUMBER_KEYS = frozenset(
         "expected_charts",
         "completed_charts",
         "dependency_waiting",
-        "window_seconds",
-        "query_count",
-        "history_query_count",
         "waiting_count",
         "queued_count",
         "running_count",
@@ -155,13 +149,6 @@ _NUMBER_KEYS = frozenset(
         "cache_count",
         "http_status_code",
         "elapsed_seconds",
-        "warehouse_total_elapsed_seconds",
-        "warehouse_compilation_seconds",
-        "warehouse_execution_seconds",
-        "warehouse_queued_overload_seconds",
-        "warehouse_queued_provisioning_seconds",
-        "warehouse_queued_repair_seconds",
-        "warehouse_transaction_blocked_seconds",
     )
 )
 _TIME_KEYS = frozenset(
@@ -173,8 +160,6 @@ _TIME_KEYS = frozenset(
         "started_at",
         "ended_at",
         "finished_at",
-        "window_start",
-        "window_end",
         "client_timestamp",
     )
 )
