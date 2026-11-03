@@ -29,6 +29,8 @@ from superset.constants import CacheRegion
 from superset.exceptions import CacheLoadError
 from superset.extensions import cache_manager
 from superset.models.helpers import QueryResult
+from superset.observability import operation
+from superset.observability.sql import dataframe_attributes
 from superset.stats_logger import BaseStatsLogger
 from superset.superset_typing import Column
 from superset.utils.cache import set_and_log_cache
@@ -176,14 +178,19 @@ class QueryCacheManager:
         force_cached: bool | None = False,
     ) -> QueryCacheManager:
         """
-        Initialize QueryCacheManager by query-cache key
+        Initialize from the functional cache key; telemetry stays out of cache values.
         """
         query_cache = cls()
         if not key or not _cache[region] or force_query:
             return query_cache
 
         try:
-            cache_value = _cache[region].get(key)
+            with operation("cache.lookup", cache_backend=str(region)) as observation:
+                cache_value = _cache[region].get(key)
+                observation.set_attribute("cache_hit", bool(cache_value))
+                if cache_value and isinstance(cache_value.get("df"), DataFrame):
+                    for name, value in dataframe_attributes(cache_value["df"]).items():
+                        observation.set_attribute(name, value)
         except Exception as ex:  # pylint: disable=broad-except
             # A cache backend outage (e.g. Redis connection/timeout errors)
             # should not surface as an error to the caller: treat it the
@@ -257,9 +264,20 @@ class QueryCacheManager:
         :returns: whether the value was actually persisted to the backend
         """
         if key:
-            return set_and_log_cache(
-                _cache[region], key, value, timeout, datasource_uid
+            attributes = (
+                dataframe_attributes(value["df"])
+                if isinstance(value.get("df"), DataFrame)
+                else {}
             )
+            with operation(
+                "cache.write", cache_backend=str(region), **attributes
+            ) as observation:
+                persisted = set_and_log_cache(
+                    _cache[region], key, value, timeout, datasource_uid
+                )
+                if not persisted:
+                    observation.set_attribute("outcome", "not_persisted")
+                return persisted
         return False
 
     @staticmethod

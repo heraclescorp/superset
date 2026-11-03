@@ -23,7 +23,7 @@ import io
 import logging
 import time
 from abc import abstractmethod
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from decimal import Decimal
 from numbers import Real
 from typing import Any, Callable, Generator
@@ -34,6 +34,15 @@ from werkzeug.local import LocalProxy
 
 from superset import db
 from superset.commands.base import BaseCommand
+from superset.observability import (
+    get_context,
+    is_enabled,
+    operation,
+    restore_context,
+    telemetry_context,
+    wire_context,
+)
+from superset.observability.sql import observe_statement
 from superset.utils.csv import escape_value
 
 logger = logging.getLogger(__name__)
@@ -226,7 +235,13 @@ class BaseStreamingCSVExportCommand(BaseCommand):
         row_count = 0
         flush_threshold = 65536  # 64KB
 
-        while rows := result_proxy.fetchmany(self._chunk_size):
+        while True:
+            with operation("sql.fetch") as fetched:
+                rows = result_proxy.fetchmany(self._chunk_size)
+                if is_enabled():
+                    fetched.set_attribute("rows", len(rows))
+            if not rows:
+                break
             for row in rows:
                 # Apply limit if specified
                 if limit is not None and row_count >= limit:
@@ -298,15 +313,44 @@ class BaseStreamingCSVExportCommand(BaseCommand):
             # exactly once for either MUTATE_AFTER_SPLIT setting, instead of
             # double-mutating when it's False and never mutating when it's
             # True.
-            mutated_sql = merged_database.mutate_sql_based_on_config(sql, is_split=True)
+            with operation(
+                "sql.planning",
+                database_id=merged_database.id if is_enabled() else None,
+            ):
+                mutated_sql = merged_database.mutate_sql_based_on_config(
+                    sql, is_split=True
+                )
 
             with merged_database.get_sqla_engine(
                 catalog=catalog, schema=schema
             ) as engine:
-                with engine.connect() as connection:
-                    result_proxy = connection.execution_options(
-                        stream_results=True
-                    ).execute(text(mutated_sql))
+                with operation(
+                    "db.connection.acquire",
+                    role="warehouse",
+                    database_id=merged_database.id if is_enabled() else None,
+                    db_system=(
+                        merged_database.db_engine_spec.engine if is_enabled() else None
+                    ),
+                ):
+                    connection = engine.connect()
+                source = (
+                    (get_context().get("source") or "export") if is_enabled() else None
+                )
+                with (
+                    connection,
+                    observe_statement(
+                        merged_database, None, mutated_sql, source=source
+                    ) as observed,
+                ):
+                    options: dict[str, Any] = {"stream_results": True}
+                    if is_enabled():
+                        options["superset_statement_observation"] = observed
+                    with observed.execute():
+                        result_proxy = connection.execution_options(**options).execute(
+                            text(mutated_sql)
+                        )
+                        if observed.cursor is None and is_enabled():
+                            observed.cursor = result_proxy.cursor
 
                     columns = list(result_proxy.keys())
 
@@ -318,20 +362,31 @@ class BaseStreamingCSVExportCommand(BaseCommand):
                     )
 
                     # Write CSV header
-                    header_data, header_bytes = self._write_csv_header(
-                        columns, csv_writer, buffer
-                    )
+                    with operation("sql.assembly") as assembled:
+                        header_data, header_bytes = self._write_csv_header(
+                            columns, csv_writer, buffer
+                        )
+                        if is_enabled():
+                            assembled.set_attribute("result_bytes", header_bytes)
                     total_bytes += header_bytes
                     yield header_data
 
                     # Process rows and yield chunks
                     row_count = 0
-                    for data_chunk, rows_processed, chunk_bytes in self._process_rows(
-                        result_proxy, csv_writer, buffer, limit, decimal_separator
-                    ):
-                        total_bytes += chunk_bytes
-                        row_count = rows_processed
-                        yield data_chunk
+                    with telemetry_context(**observed.native):
+                        for (
+                            data_chunk,
+                            rows_processed,
+                            chunk_bytes,
+                        ) in self._process_rows(
+                            result_proxy, csv_writer, buffer, limit, decimal_separator
+                        ):
+                            total_bytes += chunk_bytes
+                            row_count = rows_processed
+                            yield data_chunk
+                    if is_enabled():
+                        observed.parent.set_attribute("rows", row_count)
+                        observed.parent.set_attribute("result_bytes", total_bytes)
 
                     # Log completion
                     total_time = time.time() - start_time
@@ -358,11 +413,21 @@ class BaseStreamingCSVExportCommand(BaseCommand):
         # Capture flask.g attributes to preserve request-scoped data
         # when the streaming generator runs in a new app context.
         captured_g = capture_g_context()
+        # ContextVars outlive neither the HTTP request nor its teardown. Carry
+        # only Foundation's trusted primitive metadata, never SQL/results/g.
+        execution_context = wire_context() if is_enabled() else None
 
         def csv_generator() -> Generator[str, None, None]:
             """Generator that yields CSV data chunks."""
             with self._current_app.app_context():
-                with preserve_g_context(captured_g):
+                with (
+                    preserve_g_context(captured_g),
+                    (
+                        restore_context(execution_context)
+                        if execution_context is not None
+                        else nullcontext()
+                    ),
+                ):
                     try:
                         yield from self._execute_query_and_stream(
                             sql, database, limit, catalog, schema

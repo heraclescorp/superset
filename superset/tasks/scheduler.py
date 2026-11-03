@@ -46,6 +46,8 @@ from superset.daos.report import ReportScheduleDAO
 from superset.daos.tasks import TaskDAO
 from superset.extensions import celery_app, db
 from superset.key_value.commands.prune import KeyValuePruneCommand
+from superset.observability import emit_event, operation, telemetry_context
+from superset.observability.lifecycle import observed, set_task_outcome, task_transition
 from superset.reports.models import ReportScheduleType
 from superset.stats_logger import BaseStatsLogger
 from superset.tasks.ambient_context import use_context
@@ -100,6 +102,7 @@ def log_task_failure(  # pylint: disable=unused-argument
     },  # Retry up to 3 times, wait 60s between
     retry_backoff=True,  # exponential backoff
 )
+@observed("report.schedule", source="report")
 def scheduler(self: Task) -> None:  # pylint: disable=unused-argument
     """
     Celery beat main scheduler for reports
@@ -129,7 +132,19 @@ def scheduler(self: Task) -> None:  # pylint: disable=unused-argument
                     config=current_app.config,
                 ),
             }
-            execute.apply_async((active_schedule.id,), **async_options)
+            with telemetry_context(
+                source="report", report_schedule_id=active_schedule.id
+            ):
+                scheduled_task = execute.apply_async(
+                    (active_schedule.id,), **async_options
+                )
+                scheduled_id = getattr(scheduled_task, "id", None)
+                emit_event(
+                    "report.scheduled",
+                    scheduled_at=schedule.isoformat(),
+                    celery_task_id=scheduled_id,
+                    report_execution_id=scheduled_id,
+                )
 
 
 @celery_app.task(name="reports.execute", bind=True)
@@ -169,6 +184,7 @@ def execute(
             scheduled_dttm,
         ).run()
     except SoftTimeLimitExceeded:
+        set_task_outcome("timeout")
         stats_logger.incr("reports.execute.celery_soft_timeout")
         logger.warning(
             "Alert/report execution hit Celery soft timeout; execution_id=%s "
@@ -180,11 +196,13 @@ def execute(
         self.update_state(state="FAILURE")
         raise
     except ReportScheduleUnexpectedError:
+        set_task_outcome("error")
         logger.exception(
             "An unexpected error occurred while executing the report: %s", task_id
         )
         self.update_state(state="FAILURE")
     except (ReportScheduleCsvTimeout, ReportScheduleXlsxTimeout):
+        set_task_outcome("timeout")
         # Attachment generation timeouts are failed executions, despite their
         # HTTP 408 status. Keep them visible to error-level task monitoring.
         logger.exception(
@@ -195,6 +213,7 @@ def execute(
         )
         self.update_state(state="FAILURE")
     except CommandException as ex:
+        set_task_outcome("error")
         logger_func, level = get_logger_from_status(ex.status)
         logger_func(
             f"A downstream {level} occurred "
@@ -419,6 +438,37 @@ def execute_task(
     :param kwargs: Keyword arguments for the task function
     :returns: Dict with status and task_uuid
     """
+    with (
+        telemetry_context(
+            task_id=task_uuid,
+            task_type=task_type,
+            celery_task_id=self.request.id,
+        ),
+        operation("task.dispatch") as observation,
+    ):
+        result = _execute_task_entry(self, task_uuid, task_type, args, kwargs)
+        observation.set_attribute(
+            "outcome",
+            {
+                TaskStatus.SUCCESS.value: "success",
+                TaskStatus.FAILURE.value: "error",
+                TaskStatus.ABORTED.value: "cancelled",
+                TaskStatus.TIMED_OUT.value: "timeout",
+                TaskStatus.PENDING.value: "deferred",
+                TaskStatus.IN_PROGRESS.value: "skipped",
+                TaskStatus.ABORTING.value: "cancelled",
+            }.get(result.get("status"), "error"),
+        )
+        return result
+
+
+def _execute_task_entry(
+    self: Any,
+    task_uuid: str,
+    task_type: str,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> dict[str, Any]:
     native_uuid = UUID(task_uuid)
     celery_task_id = self.request.id
     try:
@@ -462,6 +512,11 @@ def _fail_unclaimed_task(native_uuid: UUID, exception: Exception) -> bool:
     db.session.commit()  # pylint: disable=consider-using-transaction
     if updated:
         current_app.config["STATS_LOGGER"].incr("gtf.task.transition.failure")
+        task_transition(
+            str(native_uuid),
+            TaskStatus.FAILURE.value,
+            error_type=type(exception).__name__,
+        )
         TaskManager.publish_entity_change(native_uuid)
         TaskManager.publish_required_by_changed(native_uuid)
         TaskManager.publish_completion(native_uuid, TaskStatus.FAILURE.value)
@@ -523,6 +578,13 @@ def _prepare_and_execute_task(
     if unmet is DAG_WAITING:
         countdown = _dag_defer_countdown(self.request.retries)
         current_app.config["STATS_LOGGER"].incr("gtf.task.dag_deferred")
+        emit_event(
+            "task.deferred",
+            task_id=task_uuid,
+            dependency_state="dependency_waiting",
+            retry_count=self.request.retries,
+            outcome="deferred",
+        )
         logger.info(
             "Task %s (uuid=%s) waiting on prerequisites; deferring ~%.0fs "
             "(retry %d) without holding the worker",
@@ -547,7 +609,10 @@ def _prepare_and_execute_task(
     if not _persist_celery_task_id(task, self.request.id):
         return {"status": task.status, "task_uuid": task_uuid}
     app = current_app._get_current_object()  # noqa: SLF001
-    with task_heartbeat(task.id, app) as heartbeat:
+    with (
+        telemetry_context(effective_user_id=task.user_id),
+        task_heartbeat(task.id, app) as heartbeat,
+    ):
         return _execute_task_body(task, native_uuid, task_type, args, kwargs, heartbeat)
 
 
@@ -669,6 +734,12 @@ def _execute_task_body(  # noqa: C901
     except Exception as ex:
         # Mark execution as completed to prevent late abort handlers
         ctx.mark_execution_completed()
+        emit_event(
+            "task.execution.error",
+            task_id=task_uuid,
+            error_type=type(ex).__name__,
+            outcome="cancelled" if ctx.aborting_in_flight else "error",
+        )
 
         # An abort/timeout that actually cancels the work (e.g. an abort handler
         # killing the underlying warehouse query) surfaces here as an exception.

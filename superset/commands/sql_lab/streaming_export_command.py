@@ -18,16 +18,18 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable, Generator
 
 from flask_babel import gettext as __
 from jinja2.exceptions import TemplateError
+from sqlalchemy import inspect
 
 from superset import db
 from superset.commands.streaming_export.base import BaseStreamingCSVExportCommand
 from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
 from superset.exceptions import SupersetErrorException, SupersetSecurityException
 from superset.models.sql_lab import Query
+from superset.observability import get_context, is_enabled, telemetry_context
 from superset.sql.parse import SQLScript
 from superset.sqllab.limiting_factor import LimitingFactor
 
@@ -96,6 +98,26 @@ class StreamingSqlResultExportCommand(BaseStreamingCSVExportCommand):
                 ),
                 status=400,
             ) from ex
+
+    def run(self) -> Callable[[], Generator[str, None, None]]:
+        """Carry query identity into deferred exports without inferring query ownership.
+
+        The requesting actor/effective user come from the authenticated request,
+        not the original query's user_id: an authorized export can be requested
+        by someone other than the original SQL Lab submitter.
+        """
+        if not is_enabled():
+            return super().run()
+        assert self._query is not None
+        state = inspect(self._query)
+        query_id = state.identity[0] if state.identity else state.dict.get("id")
+        source = get_context().get("source")
+        with telemetry_context(
+            source=source if source in {"report", "warmup"} else "export",
+            sql_lab_query_id=query_id,
+            sql_lab_client_id=state.dict.get("client_id", self._client_id),
+        ):
+            return super().run()
 
     def _get_sql_and_database(self) -> tuple[str, Any, str | None, str | None]:
         """

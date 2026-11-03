@@ -38,6 +38,7 @@ import { testWithAssets, expect } from '../../helpers/fixtures';
 import { type DashboardLayoutChart } from '../../helpers/api/dashboard';
 import { TIMEOUT } from '../../utils/constants';
 import { DashboardPage } from '../../pages/DashboardPage';
+import type { BrowserEvent } from '../../../src/logger/browserPerformance';
 import {
   createDashboardWithCharts,
   sliceIdFromChartDataUrl,
@@ -167,6 +168,18 @@ testWithAssets(
     // keyed by the chart each one queried for, so we can prove every chart
     // queried — not just that some chart did.
     const chartDataStatusBySliceId = new Map<number, number>();
+    const requestIds = new Set<string>();
+    const browserEvents: BrowserEvent[] = [];
+    page.on('request', request => {
+      if (
+        request.method() === 'POST' &&
+        new URL(request.url()).pathname.endsWith('/log/') &&
+        request.headers()['content-type']?.includes('application/json')
+      ) {
+        const payload: { observability_events?: BrowserEvent[] } = request.postDataJSON();
+        browserEvents.push(...(payload.observability_events ?? []));
+      }
+    });
     page.on('response', response => {
       const request = response.request();
       if (
@@ -178,6 +191,8 @@ testWithAssets(
       const sliceId = sliceIdFromChartDataUrl(response.url());
       if (sliceId !== undefined) {
         chartDataStatusBySliceId.set(sliceId, response.status());
+        const requestId = response.headers()['x-superset-request-id'];
+        if (requestId) requestIds.add(requestId);
       }
     });
 
@@ -207,6 +222,42 @@ testWithAssets(
         [200, 202],
         `chart ${chartId}'s /api/v1/chart/data response should be 200 or 202, got ${status}`,
       ).toContain(status);
+    }
+
+    const observabilityEnabled = await page.evaluate(() => {
+      const raw = document.getElementById('app')?.getAttribute('data-bootstrap');
+      const bootstrap: { common?: { conf?: { OBSERVABILITY_ENABLED?: boolean } } } = JSON.parse(raw ?? '{}');
+      return bootstrap.common?.conf?.OBSERVABILITY_ENABLED === true;
+    });
+    if (observabilityEnabled) {
+      await expect.poll(() => browserEvents.some(event =>
+        event.event_name === 'dashboard.load' && event.outcome === 'success',
+      )).toBe(true);
+      for (const chartId of chartIds) {
+        const chartEvents = browserEvents.filter(event => event.chart_id === chartId);
+        expect(chartEvents).toEqual(expect.arrayContaining([
+          expect.objectContaining({ event_name: 'chart.data_ready', outcome: 'success' }),
+          expect.objectContaining({ event_name: 'chart.render', outcome: 'success' }),
+          expect.objectContaining({ event_name: 'chart.load', outcome: 'success' }),
+        ]));
+        const finished = chartEvents.find(event => event.event_name === 'chart.load' && event.outcome === 'success');
+        expect(requestIds.has(finished?.request_id ?? '')).toBe(true);
+        expect(finished?.duration_seconds).toBeGreaterThanOrEqual(0);
+        expect(typeof finished?.cache_hit).toBe('boolean');
+        expect(typeof finished?.async_execution).toBe('boolean');
+        expect(finished?.force_refresh).toBe(false);
+      }
+      expect(new Set(browserEvents.map(event => event.browser_event_id)).size).toBe(browserEvents.length);
+      expect(new Set(browserEvents.map(event => event.browser_view_id)).size).toBe(1);
+      const allowedKeys = [
+        'event_name', 'browser_event_id', 'browser_view_id', 'browser_load_id',
+        'chart_id', 'dashboard_id', 'dataset_id', 'datasource_type', 'phase',
+        'outcome', 'duration_seconds', 'request_id', 'expected_charts', 'completed_charts',
+        'cache_hit', 'async_execution', 'force_refresh',
+      ];
+      expect(browserEvents.every(event => Object.keys(event).every(key => allowedKeys.includes(key)))).toBe(true);
+    } else {
+      expect(browserEvents).toHaveLength(0);
     }
   },
 );

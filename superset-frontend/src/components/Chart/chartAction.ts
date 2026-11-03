@@ -47,6 +47,12 @@ import {
 } from 'src/components/MessageToasts/actions';
 import { logEvent } from 'src/logger/actions';
 import { Logger, LOG_ACTIONS_LOAD_CHART } from 'src/logger/LogUtils';
+import {
+  beginChartLoad,
+  chartDataReady,
+  finishChartLoad,
+  observeChartResponse,
+} from 'src/logger/browserPerformance';
 import { allowCrossDomain as domainShardingEnabled } from 'src/utils/hostNamesConfig';
 import { updateDataMask } from 'src/dataMask/actions';
 import { AsyncJob, waitForAsyncData } from 'src/middleware/asyncEvent';
@@ -746,17 +752,23 @@ export function handleChartDataResponse(
 export async function requestChartDataResolved(
   params: Omit<GetChartDataRequestParams, 'enableAsyncMode'>,
   signal?: AbortSignal,
+  onResponse?: (response: Response, requestStarted: number) => void,
 ): Promise<QueryData[]> {
   // The synchronous read-back of a forced refresh stamps each query with its
   // task id (from the 202, index-aligned to queries) as the forced-refresh nonce.
   const reissueSynchronously = async (
     queryForceNonces?: string[],
   ): Promise<QueryData[]> => {
+    const requestStarted = onResponse ? performance.now() : 0;
     const { response, json } = await getChartDataRequest({
       ...params,
       queryForceNonces: params.force ? queryForceNonces : undefined,
       enableAsyncMode: false,
+    }).catch((error: unknown) => {
+      if (error instanceof Response) onResponse?.(error, requestStarted);
+      throw error;
     });
+    onResponse?.(response, requestStarted);
     if (response.status !== 200) {
       throw new Error(
         `Received unexpected response status (${response.status}) while fetching chart data`,
@@ -765,10 +777,15 @@ export async function requestChartDataResolved(
     return extractResult(json);
   };
 
+  const requestStarted = onResponse ? performance.now() : 0;
   const { response, json } = await getChartDataRequest({
     ...params,
     enableAsyncMode: true,
+  }).catch((error: unknown) => {
+    if (error instanceof Response) onResponse?.(error, requestStarted);
+    throw error;
   });
+  onResponse?.(response, requestStarted);
   return handleChartDataResponse(response, json, reissueSynchronously, signal);
 }
 
@@ -820,6 +837,16 @@ export function exploreJSON(
     const state = getState();
     const logStart = Logger.getTimestamp();
     const controller = new AbortController();
+    const load = beginChartLoad(
+      key,
+      {
+        chart_id: formData.slice_id || undefined,
+        dashboard_id: dashboardId,
+      },
+      controller.signal,
+      formData.datasource,
+      force,
+    );
     const prevController = key ? state.charts?.[key]?.queryController : null;
     const queryTimeout =
       timeout || state.common.conf.SUPERSET_WEBSERVER_TIMEOUT || 0;
@@ -858,6 +885,9 @@ export function exploreJSON(
         ownState,
       },
       controller.signal,
+      load
+        ? (response, requestStarted) => observeChartResponse(load, response, requestStarted)
+        : undefined,
     )
       .then(queriesResponse => {
         // Drop stale responses: if this request was aborted (Stop, or a newer
@@ -871,9 +901,11 @@ export function exploreJSON(
             controller.signal.aborted ||
             (currentController != null && currentController !== controller)
           ) {
+            finishChartLoad(load, 'abandoned');
             return undefined;
           }
         }
+        chartDataReady(load, queriesResponse);
         queriesResponse.forEach(
           (resultItem: QueryData & { applied_filters?: JsonObject[] }) =>
             dispatch(
@@ -917,6 +949,7 @@ export function exploreJSON(
           const isAbort =
             response?.name === 'AbortError' || response?.statusText === 'abort';
           if (isAbort) {
+            finishChartLoad(load, 'abandoned');
             // Abort is expected: filters changed, chart unmounted, etc.
             return dispatch(
               chartUpdateStopped(key as string | number, controller),
@@ -931,9 +964,11 @@ export function exploreJSON(
               controller.signal.aborted ||
               (currentController != null && currentController !== controller)
             ) {
+              finishChartLoad(load, 'abandoned');
               return undefined;
             }
           }
+          finishChartLoad(load, 'error', 'data');
 
           if (isFeatureEnabled(FeatureFlag.GlobalAsyncQueries)) {
             // `waitForAsyncData` rejects with an already-normalized async-event

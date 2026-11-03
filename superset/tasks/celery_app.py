@@ -23,12 +23,19 @@ it needs to call create_app() in order to initialize things properly
 from typing import Any
 
 from celery import Task
-from celery.signals import task_postrun, worker_process_init
+from celery.signals import (
+    beat_init,
+    task_postrun,
+    worker_process_init,
+    worker_process_shutdown,
+)
 from flask import has_app_context
 
 # Superset framework imports
 from superset import create_app
 from superset.extensions import celery_app, db
+from superset.observability import init_process
+from superset.observability.runtime import shutdown as shutdown_observability
 
 # Init the Flask app / configure everything
 flask_app = create_app()
@@ -44,9 +51,22 @@ app = celery_app
 
 @worker_process_init.connect
 def reset_db_connection_pool(**kwargs: Any) -> None:  # pylint: disable=unused-argument
+    init_process()
     with flask_app.app_context():
         # https://docs.sqlalchemy.org/en/14/core/connections.html#engine-disposal
         db.engine.dispose()
+
+
+@beat_init.connect
+def initialize_beat_observability(**kwargs: Any) -> None:
+    """Beat is a standalone PID, not a prefork parent or Flask web process."""
+    init_process(role="beat")
+
+
+@worker_process_shutdown.connect
+def shutdown_worker_observability(**kwargs: Any) -> None:
+    """Flush only this child writer, with bounded exporter deadlines."""
+    shutdown_observability()
 
 
 @task_postrun.connect

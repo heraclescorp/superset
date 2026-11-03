@@ -72,6 +72,7 @@ from superset.models.core import Database
 from superset.models.dashboard import Dashboard
 from superset.models.slice import Slice
 from superset.models.user_attributes import UserAttribute
+from superset.observability.browser import browser_log
 from superset.superset_typing import (
     ExplorableData,
     FlaskResponse,
@@ -667,6 +668,7 @@ class Superset(BaseSupersetView):
 
     @api
     @has_access
+    @browser_log
     @event_logger.log_this
     @expose("/log/", methods=("POST",))
     def log(self) -> FlaskResponse:

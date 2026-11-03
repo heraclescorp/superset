@@ -666,7 +666,17 @@ openpyxl==3.1.5
 opensearch-py==2.8.0
     # via elasticsearch-dbapi
 opentelemetry-api==1.39.1
-    # via fastmcp-slim
+    # via apache-superset, fastmcp-slim, opentelemetry-sdk
+opentelemetry-exporter-otlp-proto-common==1.39.1
+    # via opentelemetry-exporter-otlp-proto-grpc
+opentelemetry-exporter-otlp-proto-grpc==1.39.1
+    # via apache-superset
+opentelemetry-proto==1.39.1
+    # via opentelemetry-exporter-otlp-proto-common
+opentelemetry-sdk==1.39.1
+    # via apache-superset, opentelemetry-exporter-otlp-proto-grpc
+opentelemetry-semantic-conventions==0.60b1
+    # via opentelemetry-sdk
 oracledb==4.0.2
     # via
     #   apache-superset

@@ -78,6 +78,12 @@ from superset.extensions import (
     ssh_manager_factory,
 )
 from superset.models.helpers import AuditMixinNullable, ImportExportMixin, UUIDMixin
+from superset.observability import instrument_engine, operation
+from superset.observability.sql import (
+    dataframe_attributes,
+    execute_with_statement_tag,
+    observe_statement,
+)
 from superset.result_set import SupersetResultSet
 from superset.sql.parse import SQLScript, Table
 from superset.superset_typing import (
@@ -650,8 +656,21 @@ class Database(CoreDatabase, AuditMixinNullable, ImportExportMixin):  # pylint: 
                         ) -> None:
                             cursor = dbapi_connection.cursor()
                             try:
-                                for prequery in prequeries:
-                                    cursor.execute(prequery)
+                                for index, prequery in enumerate(prequeries):
+                                    with (
+                                        observe_statement(
+                                            self,
+                                            cursor,
+                                            prequery,
+                                            statement_index=index,
+                                            source="metadata",
+                                        ) as statement,
+                                        statement.execute(),
+                                    ):
+                                        if self.db_engine_spec.engine == "snowflake":
+                                            execute_with_statement_tag(cursor, prequery)
+                                        else:
+                                            cursor.execute(prequery)
                             finally:
                                 cursor.close()
 
@@ -776,6 +795,7 @@ class Database(CoreDatabase, AuditMixinNullable, ImportExportMixin):  # pylint: 
             raise self.db_engine_spec.get_dbapi_mapped_exception(ex) from ex
         sqla.event.listen(engine, "handle_error", mark_database_engine_error)
         self.db_engine_spec.register_engine_events(engine)
+        instrument_engine(engine, role="warehouse", database_id=self.id)
         if cache_key is not None:
             with _ENGINE_CACHE_LOCK:
                 _ENGINE_CACHE[cache_key] = engine
@@ -814,7 +834,14 @@ class Database(CoreDatabase, AuditMixinNullable, ImportExportMixin):  # pylint: 
             source=source,
         ) as engine:
             with check_for_oauth2(self):
-                with closing(engine.raw_connection()) as conn:
+                with operation(
+                    "db.connection.acquire",
+                    role="warehouse",
+                    db_system=self.db_engine_spec.engine,
+                    database_id=self.id,
+                ):
+                    conn = engine.raw_connection()
+                with closing(conn):
                     yield conn
 
     def get_default_catalog(self) -> str | None:
@@ -948,7 +975,8 @@ class Database(CoreDatabase, AuditMixinNullable, ImportExportMixin):  # pylint: 
         :return: Tuple of (cursor, rows, description) where rows and description
         are None if not fetching.
         """
-        script = SQLScript(sql, self.db_engine_spec.engine)
+        with operation("sql.planning", database_id=self.id):
+            script = SQLScript(sql, self.db_engine_spec.engine)
 
         with self.get_sqla_engine(catalog=catalog, schema=schema) as engine:
             engine_url = engine.url
@@ -987,22 +1015,32 @@ class Database(CoreDatabase, AuditMixinNullable, ImportExportMixin):  # pylint: 
                 )
                 _log_query(sql_)
 
-                with event_logger.log_context(
-                    action="execute_sql",
-                    database=self,
-                    object_ref=__name__,
-                ):
-                    self.db_engine_spec.execute(cursor, sql_, self)
+                with observe_statement(
+                    self, cursor, sql_, statement_index=i
+                ) as observed_statement:
+                    with (
+                        event_logger.log_context(
+                            action="execute_sql",
+                            database=self,
+                            object_ref=__name__,
+                        ),
+                        observed_statement.execute(),
+                    ):
+                        self.db_engine_spec.execute(cursor, sql_, self)
 
-                # Fetch results from last statement if requested
-                if fetch_last_result and i == len(script.statements) - 1:
-                    rows = self.db_engine_spec.fetch_data(cursor)
-                    # Some asynchronous DB-API drivers expose placeholder metadata
-                    # until fetching waits for the operation to finish.
-                    description = cursor.description
-                else:
-                    # Consume results without storing
-                    cursor.fetchall()
+                    with observed_statement.fetch() as fetched:
+                        # Fetch results from last statement if requested.
+                        if fetch_last_result and i == len(script.statements) - 1:
+                            rows = self.db_engine_spec.fetch_data(cursor)
+                            # Async DB-API metadata may appear only after fetch.
+                            description = cursor.description
+                            fetched.set_attribute("rows", len(rows))
+                        else:
+                            # Consume results without storing.
+                            discarded = cursor.fetchall()
+                            if discarded is not None:
+                                fetched.set_attribute("rows", len(discarded))
+                            del discarded
 
             return cursor, rows, description
 
@@ -1044,14 +1082,18 @@ class Database(CoreDatabase, AuditMixinNullable, ImportExportMixin):  # pylint: 
             sql, catalog, schema, fetch_last_result=True
         )
 
-        df = None
-        if rows is not None:
-            df = self.load_into_dataframe(description, rows)
+        with operation("sql.dataframe", database_id=self.id) as observed:
+            df = None
+            if rows is not None:
+                df = self.load_into_dataframe(description, rows)
 
-        if mutator:
-            df = mutator(df)
+            if mutator:
+                df = mutator(df)
 
-        return self.post_process_df(df)
+            df = self.post_process_df(df)
+            for key, value in dataframe_attributes(df).items():
+                observed.set_attribute(key, value)
+            return df
 
     @event_logger.log_this
     def fetch_rows(self, cursor: Any, last: bool) -> list[tuple[Any, ...]] | None:

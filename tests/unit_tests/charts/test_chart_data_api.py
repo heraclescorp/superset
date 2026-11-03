@@ -18,11 +18,12 @@ from __future__ import annotations
 
 import inspect
 from copy import deepcopy
+from types import SimpleNamespace
 from typing import Any, TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import pytest
-from flask import Flask, g
+from flask import Flask, g, Response
 
 from superset.charts.data.api import ChartDataRestApi
 from superset.charts.data.dashboard_filter_context import (
@@ -1621,3 +1622,234 @@ def test_get_data_response_streaming_up_front_maps_setup_errors(
     assert response.json["message"] == str(exc)
     mock_stream.assert_called_once()
     command.execute.assert_not_called()
+
+
+@pytest.mark.parametrize("mode", ["sync", "cached_async", "async", "force_async"])
+@pytest.mark.parametrize("source", ["chart", "report", "warmup", "export"])
+def test_data_route_scopes_sync_async_cache_and_force_refresh(
+    app: SupersetApp,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    source: str,
+) -> None:
+    """Observe the real route's execution/schedule boundary without payload metadata."""
+    from superset.observability import events, get_context, runtime, telemetry_context
+
+    monkeypatch.setattr(runtime, "_CONFIG", {"OBSERVABILITY_ENABLED": True})
+    monkeypatch.setitem(app.config, "OBSERVABILITY_ENABLED", True)
+    monkeypatch.setattr(events, "get_runtime", lambda: None)
+    monkeypatch.setattr(events, "emit_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(events, "observe_operation", lambda *args: None)
+    body = {
+        "datasource": {"id": 5, "type": "table"},
+        "form_data": {"slice_id": 111, "dashboardId": 222},
+        "queries": [{"columns": ["col1"]}],
+        "force": mode == "force_async",
+    }
+    original_body = deepcopy(body)
+    context = SimpleNamespace(
+        datasource=SimpleNamespace(id=5, database_id=6),
+        form_data=body["form_data"],
+        slice_=None,
+        force=body["force"],
+        is_async_execution=False,
+        result_format=ChartDataResultFormat.JSON,
+        result_type=ChartDataResultType.FULL,
+    )
+    command = MagicMock(query_context=context)
+    observations = []
+
+    def execute(**kwargs: Any) -> ChartDataExecutionResult:
+        observations.append(get_context())
+        if mode == "async":
+            raise ChartDataCacheLoadError("cache miss")
+        return ChartDataExecutionResult(
+            query_context=context,
+            queries=(QueryDataResult({"data": [{"col1": 1}]}, _query_timing()),),
+        )
+
+    def submit(*args: Any) -> dict[str, Any]:
+        observations.append(get_context())
+        return {"task_ids": ["task-chart"], "cursor": "2026-01-01T00:00:00"}
+
+    command.execute.side_effect = execute
+    api = ChartDataRestApi()
+    get_response = inspect.unwrap(ChartDataRestApi._get_data_response)
+    before = get_context()
+    with (
+        app.test_request_context("/api/v1/chart/data", method="POST", json=body),
+        patch.object(api, "_create_query_context_from_form", return_value=context),
+        patch("superset.charts.data.api.ChartDataCommand", return_value=command),
+        patch.object(api, "_should_run_async", return_value=mode != "sync"),
+        patch.object(
+            api,
+            "_get_data_response",
+            side_effect=lambda *args, **kwargs: get_response(api, *args, **kwargs),
+        ),
+        patch(
+            "superset.charts.data.api.sanitize_error_message",
+            side_effect=lambda message: message,
+        ),
+        patch("superset.charts.data.api.is_sanitization_required", return_value=False),
+        patch(
+            "superset.charts.data.api.submit_chart_data_query_tasks", side_effect=submit
+        ) as schedule,
+        telemetry_context(source=source, request_actor_user_id=19),
+    ):
+        g.user = SimpleNamespace(id=71)
+        response = inspect.unwrap(ChartDataRestApi.data)(api)
+
+    assert response.status_code == (202 if mode in {"async", "force_async"} else 200)
+    assert response.headers["Content-Type"].startswith("application/json")
+    assert get_context() == before
+    assert body == original_body
+    if mode == "force_async":
+        command.execute.assert_not_called()
+    assert schedule.call_count == int(mode in {"async", "force_async"})
+    assert observations
+    for observation in observations:
+        assert observation["source"] == source
+        assert observation["chart_id"] == 111
+        assert observation["dashboard_id"] == 222
+        assert observation["dataset_id"] == 5
+        assert observation["database_id"] == 6
+        assert observation["request_actor_user_id"] == 19
+        assert observation["effective_user_id"] == 71
+        assert observation["async_execution"] is (mode != "sync")
+        assert observation["force_refresh"] is (mode == "force_async")
+
+
+@pytest.mark.parametrize("run_async", [False, True])
+def test_saved_chart_assets_are_scoped_without_query_serialization(
+    app: SupersetApp,
+    monkeypatch: pytest.MonkeyPatch,
+    run_async: bool,
+) -> None:
+    """GET's explicit path/filter assets survive even when saved form_data is absent."""
+    from superset.observability import get_context, runtime
+
+    monkeypatch.setattr(runtime, "_CONFIG", {"OBSERVABILITY_ENABLED": True})
+    monkeypatch.setitem(app.config, "OBSERVABILITY_ENABLED", True)
+    saved_query = {"datasource": {"id": 5, "type": "table"}, "queries": []}
+    chart = SimpleNamespace(query_context=json.dumps(saved_query), params="{}")
+    context = SimpleNamespace(
+        datasource=SimpleNamespace(id=5, database_id=6),
+        form_data=None,
+        slice_=None,
+        result_format="json",
+        force=False,
+        is_async_execution=False,
+    )
+    api = ChartDataRestApi()
+    api.datamodel = MagicMock()
+    api.datamodel.get.return_value = chart
+    api._base_filters = []
+    observations = []
+    response = Response(
+        "unchanged", headers={"X-Superset-Request-Id": "server-request"}
+    )
+
+    def execute(*args: Any, **kwargs: Any) -> Response:
+        observations.append(get_context())
+        return response
+
+    before = get_context()
+    with (
+        app.test_request_context("/api/v1/chart/111/data/?filters_dashboard_id=222"),
+        patch.object(
+            api, "_create_query_context_from_form", return_value=context
+        ) as create,
+        patch("superset.charts.data.api.ChartDataCommand"),
+        patch(
+            "superset.charts.data.api.get_dashboard_filter_context",
+            return_value=SimpleNamespace(extra_form_data={}),
+        ),
+        patch.object(api, "_should_run_async", return_value=run_async),
+        patch.object(api, "_get_data_response", side_effect=execute),
+        patch.object(api, "_run_async", side_effect=execute),
+    ):
+        returned = inspect.unwrap(ChartDataRestApi.get_data)(api, 111)
+    assert returned is response
+    assert returned.headers["X-Superset-Request-Id"] == "server-request"
+    assert get_context() == before
+    assert observations[0]["chart_id"] == 111
+    assert observations[0]["dashboard_id"] == 222
+    assert observations[0]["async_execution"] is run_async
+    assert "chart_id" not in create.call_args.args[0]
+    assert "dashboard_id" not in create.call_args.args[0]
+    assert json.loads(chart.query_context) == saved_query
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_streaming_chart_context_survives_deferred_iteration(
+    app: SupersetApp,
+    monkeypatch: pytest.MonkeyPatch,
+    enabled: bool,
+) -> None:
+    """A deferred export restores only trusted metadata and preserves its headers."""
+    from superset.commands.chart.data.streaming_export_command import (
+        StreamingCSVExportCommand,
+    )
+    from superset.common.query_context_processor import chart_data_context
+    from superset.observability import (
+        get_context,
+        runtime,
+        telemetry_context,
+        wire_context,
+    )
+
+    monkeypatch.setattr(runtime, "_CONFIG", {"OBSERVABILITY_ENABLED": enabled})
+    monkeypatch.setitem(app.config, "OBSERVABILITY_ENABLED", enabled)
+    context = SimpleNamespace(
+        datasource=SimpleNamespace(id=5, database_id=6),
+        form_data={"slice_id": 111, "dashboardId": 222},
+        slice_=None,
+        result_format="csv",
+        force=False,
+        is_async_execution=False,
+    )
+    observed = []
+
+    def stream() -> Any:
+        observed.append(get_context())
+        yield "col1\nvalue\n"
+
+    monkeypatch.setattr(
+        StreamingCSVExportCommand, "_execute_query_and_stream", lambda *args: stream()
+    )
+
+    api = ChartDataRestApi()
+    before = get_context()
+    with (
+        app.test_request_context("/api/v1/chart/data"),
+        patch("superset.charts.data.api.StreamingCSVExportCommand.validate"),
+        patch(
+            "superset.charts.data.api.StreamingCSVExportCommand._get_sql_and_database",
+            return_value=("private-sql", SimpleNamespace(id=6), None, None),
+        ),
+        patch(
+            "superset.commands.streaming_export.base.wire_context", wraps=wire_context
+        ) as wire,
+        telemetry_context(source="export", request_actor_user_id=19),
+    ):
+        g.user = SimpleNamespace(id=71)
+        with chart_data_context(context):
+            response = api._create_streaming_csv_response(
+                {"query_context": context},
+                filename="chart.csv",
+            )
+    assert get_context() == before
+    assert b"".join(response.iter_encoded()) == b"col1\nvalue\n"
+    assert get_context() == before
+    assert response.headers["Content-Disposition"] == 'attachment; filename="chart.csv"'
+    assert response.headers["Cache-Control"] == "no-cache"
+    assert response.headers["X-Accel-Buffering"] == "no"
+    assert wire.call_count == int(enabled)
+    if enabled:
+        assert observed[0]["source"] == "export"
+        assert observed[0]["chart_id"] == 111
+        assert observed[0]["dashboard_id"] == 222
+        assert observed[0]["request_actor_user_id"] == 19
+        assert observed[0]["effective_user_id"] == 71
+    else:
+        assert observed == [before]

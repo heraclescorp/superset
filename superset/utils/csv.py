@@ -22,6 +22,11 @@ from urllib.error import URLError
 
 import pandas as pd
 
+from superset.observability import is_enabled
+from superset.observability.lifecycle import (
+    ExecutionContextRedirectHandler,
+    sign_execution_request,
+)
 from superset.utils import json
 from superset.utils.core import GenericDataType
 
@@ -115,12 +120,20 @@ def get_chart_csv_data(
 ) -> Optional[bytes]:
     content = None
     if auth_cookies:
-        opener = urllib.request.build_opener()
+        opener = (
+            urllib.request.build_opener(ExecutionContextRedirectHandler())
+            if is_enabled()
+            else urllib.request.build_opener()
+        )
         cookie_str = ";".join([f"{key}={val}" for key, val in auth_cookies.items()])
         opener.addheaders.append(("Cookie", cookie_str))
+        request: Any = chart_url
+        if is_enabled():
+            request = urllib.request.Request(chart_url)  # noqa: S310
+            sign_execution_request(request)
         # A missing timeout means the socket blocks forever when the Superset
         # webserver is unreachable, wedging the report schedule in WORKING.
-        with closing(opener.open(chart_url, timeout=timeout)) as response:
+        with closing(opener.open(request, timeout=timeout)) as response:
             content = response.read()
             if response.getcode() != 200:
                 raise URLError(response.getcode())

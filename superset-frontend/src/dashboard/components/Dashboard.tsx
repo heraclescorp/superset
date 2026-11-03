@@ -24,6 +24,10 @@ import { Loading } from '@superset-ui/core/components';
 import { PluginContext } from 'src/components';
 import type { PluginContextType } from 'src/components/DynamicPlugins/types';
 import getBootstrapData from 'src/utils/getBootstrapData';
+import {
+  openDashboardView,
+  closeDashboardView,
+} from 'src/logger/browserPerformance';
 import type {
   Slice,
   ActiveFilters,
@@ -277,6 +281,14 @@ function Dashboard({
     onVisibilityChangeRef.current = onVisibilityChange;
     actionsRef.current = actions;
   });
+
+  useEffect(() => {
+    if (getBootstrapData().common.conf.OBSERVABILITY_ENABLED !== true) return undefined;
+    const view = openDashboardView(dashboardId, getChartIdsFromLayout(layout));
+    return () => closeDashboardView(view);
+    // A view covers the initial layout; editing it does not restart navigation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dashboardId]);
 
   // componentDidMount equivalent
   useEffect(() => {

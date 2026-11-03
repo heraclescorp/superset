@@ -20,11 +20,12 @@ import copy
 import logging
 import re
 import time
-from typing import Any, cast, ClassVar, Sequence, TYPE_CHECKING
+from contextlib import contextmanager
+from typing import Any, cast, ClassVar, Iterator, Sequence, TYPE_CHECKING
 
 import pandas as pd
 import pyarrow as pa
-from flask import current_app
+from flask import current_app, has_request_context
 from flask_babel import gettext as _
 from jinja2.exceptions import TemplateError
 from pandas.api.types import infer_dtype
@@ -51,6 +52,8 @@ from superset.exceptions import (
 from superset.explorables.base import Explorable
 from superset.extensions import cache_manager, security_manager
 from superset.models.helpers import QueryResult
+from superset.observability import get_context, is_enabled, operation, telemetry_context
+from superset.observability.sql import dataframe_attributes
 from superset.superset_typing import AdhocColumn, AdhocMetric, Column
 from superset.utils import csv, excel
 from superset.utils.cache import generate_cache_key, set_and_log_cache
@@ -131,6 +134,89 @@ def is_summable(series: pd.Series) -> bool:
     if series.dtype.kind in "biufc":
         return True
     return infer_dtype(series, skipna=True) == "decimal"
+
+
+@contextmanager
+def chart_data_context(
+    query_context: QueryContext,
+    *,
+    query_index: int | None = None,
+    async_execution: bool | None = None,
+    chart_id: int | None = None,
+    dashboard_id: int | None = None,
+    query_obj: QueryObject | None = None,
+) -> Iterator[None]:
+    """Scope execution metadata without changing query/cache/dedup identities.
+
+    Celery's trusted lifecycle headers carry this scope across the worker boundary.
+    Preserve the originating report/warmup/export and request actor when execution
+    impersonates a different user; only the effective user comes from that scope.
+    """
+    if not is_enabled():
+        yield
+        return
+    context = get_context()
+    if (
+        query_index is None
+        and query_obj is not None
+        and not isinstance(context.get("query_index"), int)
+    ):
+        query_index = next(
+            (
+                index
+                for index, candidate in enumerate(query_context.queries)
+                if candidate is query_obj
+            ),
+            None,
+        )
+    form_data = query_context.form_data or {}
+    datasource = query_context.datasource
+    effective_user_id = get_user_id()
+    source = context.get("source")
+    if source not in {"report", "warmup", "export"}:
+        source = (
+            "export"
+            if query_context.result_format in ChartDataResultFormat.table_like()
+            else "chart"
+        )
+    attributes: dict[str, Any] = {
+        "source": source,
+        "effective_user_id": effective_user_id,
+        "dataset_id": getattr(datasource, "id", None),
+        "database_id": getattr(datasource, "database_id", None),
+        "force_refresh": bool(query_context.force),
+        "async_execution": (
+            bool(context.get("async_execution") or query_context.is_async_execution)
+            if async_execution is None
+            else async_execution
+        ),
+    }
+    if "request_actor_user_id" not in context:
+        attributes["request_actor_user_id"] = (
+            effective_user_id if has_request_context() else None
+        )
+    for key, value in (
+        (
+            "chart_id",
+            chart_id
+            if chart_id is not None
+            else context.get(
+                "chart_id",
+                form_data.get("slice_id") or getattr(query_context.slice_, "id", None),
+            ),
+        ),
+        (
+            "dashboard_id",
+            dashboard_id
+            if dashboard_id is not None
+            else context.get("dashboard_id", form_data.get("dashboardId")),
+        ),
+        ("query_index", query_index),
+    ):
+        if value is not None:
+            attributes[key] = value
+    with telemetry_context(**attributes):
+        yield
 
 
 class QueryContextProcessor:
@@ -248,40 +334,59 @@ class QueryContextProcessor:
     def get_df_payload_result(
         self, query_obj: QueryObject, force_cached: bool | None = False
     ) -> QueryAcquisitionResult:
-        """Acquire a dataframe and return timing as a typed sidecar."""
-        query_planning_start_ns = time.perf_counter_ns()
-        if query_obj:
-            # Always validate the query object before generating cache key
-            # This ensures sanitize_clause() is called and extras are normalized
-            query_obj.validate()
+        """Acquire a dataframe with execution context outside the functional payload."""
+        if not is_enabled():
+            return self._get_df_payload_result(query_obj, force_cached)
+        with (
+            chart_data_context(self._query_context, query_obj=query_obj),
+            operation("chart.query") as observation,
+        ):
+            result = self._get_df_payload_result(query_obj, force_cached)
+            observation.set_attribute("cache_hit", bool(result.payload["is_cached"]))
+            for key, value in dataframe_attributes(result.payload["df"]).items():
+                observation.set_attribute(key, value)
+            if result.payload["status"] == QueryStatus.FAILED:
+                observation.set_attribute("outcome", "error")
+            return result
 
-        cache_key = self.query_cache_key(query_obj)
-        timeout = self.get_cache_timeout()
-        force_query = (
-            self._resolve_forced_query(query_obj, cache_key)
-            or timeout == CACHE_DISABLED_TIMEOUT
-        )
+    def _get_df_payload_result(
+        self, query_obj: QueryObject, force_cached: bool | None = False
+    ) -> QueryAcquisitionResult:
+        """Keep timing sidecars separate from cached query results."""
+        query_planning_start_ns = time.perf_counter_ns()
+        with operation("chart.query.plan"):
+            if query_obj:
+                # Validate before keying: this normalizes extras and SQL clauses.
+                query_obj.validate()
+
+            cache_key = self.query_cache_key(query_obj)
+            timeout = self.get_cache_timeout()
+            force_query = (
+                self._resolve_forced_query(query_obj, cache_key)
+                or timeout == CACHE_DISABLED_TIMEOUT
+            )
         query_planning_ns = max(0, time.perf_counter_ns() - query_planning_start_ns)
 
         cache_resolution_start_ns = time.perf_counter_ns()
-        cache = QueryCacheManager.get(
-            key=cache_key,
-            region=CacheRegion.DATA,
-            force_query=force_query,
-            force_cached=force_cached,
-        )
+        with operation("chart.cache.resolve") as observation:
+            cache = QueryCacheManager.get(
+                key=cache_key,
+                region=CacheRegion.DATA,
+                force_query=force_query,
+                force_cached=force_cached,
+            )
 
-        # If cache is loaded but missing applied_filter_columns and query has filters,
-        # treat as cache miss to ensure fresh query with proper applied_filter_columns
-        if (
-            query_obj
-            and cache_key
-            and cache.is_loaded
-            and not cache.applied_filter_columns
-            and query_obj.filter
-            and len(query_obj.filter) > 0
-        ):
-            cache.is_loaded = False
+            # Legacy entries lacking filter metadata must be recomputed.
+            if (
+                query_obj
+                and cache_key
+                and cache.is_loaded
+                and not cache.applied_filter_columns
+                and query_obj.filter
+                and len(query_obj.filter) > 0
+            ):
+                cache.is_loaded = False
+            observation.set_attribute("cache_hit", bool(cache.is_loaded))
 
         cache_resolution_ns = max(0, time.perf_counter_ns() - cache_resolution_start_ns)
 
@@ -331,6 +436,22 @@ class QueryContextProcessor:
                 self._mark_force_executed(query_obj, cache_key, cache.result_persisted)
 
         payload_assembly_start_ns = time.perf_counter_ns()
+        with operation("chart.payload.assemble"):
+            payload = self._assemble_df_payload(query_obj, cache, cache_key)
+        timing = QueryAcquisitionTiming(
+            query_planning_ns=query_planning_ns,
+            cache_resolution_ns=cache_resolution_ns,
+            data_acquisition_ns=data_acquisition_ns,
+            payload_assembly_ns=max(
+                0, time.perf_counter_ns() - payload_assembly_start_ns
+            ),
+        )
+        return QueryAcquisitionResult(payload=payload, timing=timing)
+
+    def _assemble_df_payload(
+        self, query_obj: QueryObject, cache: QueryCacheManager, cache_key: str | None
+    ) -> dict[str, Any]:
+        """Assemble the existing payload without adding telemetry fields."""
         # the N-dimensional DataFrame has converted into flat DataFrame
         # by `flatten operator`, "comma" in the column is escaped by `escape_separator`
         # the result DataFrame columns should be unescaped
@@ -412,15 +533,7 @@ class QueryContextProcessor:
             "label_map": label_map,
             "warning": warning,
         }
-        timing = QueryAcquisitionTiming(
-            query_planning_ns=query_planning_ns,
-            cache_resolution_ns=cache_resolution_ns,
-            data_acquisition_ns=data_acquisition_ns,
-            payload_assembly_ns=max(
-                0, time.perf_counter_ns() - payload_assembly_start_ns
-            ),
-        )
-        return QueryAcquisitionResult(payload=payload, timing=timing)
+        return payload
 
     def query_cache_key(self, query_obj: QueryObject, **kwargs: Any) -> str | None:
         """
@@ -489,9 +602,19 @@ class QueryContextProcessor:
         combined result matches the shape the native path produces (SIP.md,
         phase 3b). Engines that support it run the single native query.
         """
-        if query_object.grouping_sets and not self._supports_grouping_sets():
-            return self._grouping_sets_fallback(query_object)
-        return self._qc_datasource.get_query_result(query_object)
+        with (
+            chart_data_context(self._query_context, query_obj=query_object),
+            operation("chart.data.acquire") as observation,
+        ):
+            if query_object.grouping_sets and not self._supports_grouping_sets():
+                result = self._grouping_sets_fallback(query_object)
+            else:
+                result = self._qc_datasource.get_query_result(query_object)
+            for key, value in dataframe_attributes(result.df).items():
+                observation.set_attribute(key, value)
+            if result.status == QueryStatus.FAILED:
+                observation.set_attribute("outcome", "error")
+            return result
 
     def _supports_grouping_sets(self) -> bool:
         engine_spec: BaseEngineSpec | None = getattr(
@@ -563,6 +686,27 @@ class QueryContextProcessor:
     def get_data(
         self, df: pd.DataFrame, coltypes: list[GenericDataType]
     ) -> str | bytes | list[dict[str, Any]]:
+        """Measure dataframe serialization independently from source acquisition."""
+        with (
+            chart_data_context(self._query_context),
+            operation(
+                "chart.data.serialize", **dataframe_attributes(df)
+            ) as observation,
+        ):
+            result = self._serialize_data(df, coltypes)
+            if is_enabled() and isinstance(result, (str, bytes)):
+                observation.set_attribute(
+                    "result_bytes",
+                    len(result.encode("utf-8"))
+                    if isinstance(result, str)
+                    else len(result),
+                )
+            return result
+
+    def _serialize_data(
+        self, df: pd.DataFrame, coltypes: list[GenericDataType]
+    ) -> str | bytes | list[dict[str, Any]]:
+        """Serialize the caller's dataframe using the requested result format."""
         if self._query_context.result_format == ChartDataResultFormat.ARROW:
             return self._to_arrow_ipc(df)
 
@@ -677,15 +821,17 @@ class QueryContextProcessor:
                 )
             ]
 
-        query_results = tuple(
-            get_query_results_with_timing(
-                query_obj.result_type or self._query_context.result_type,
-                self._query_context,
-                query_obj,
-                force_cached,
-            )
-            for query_obj in self._query_context.queries
-        )
+        query_results = []
+        for index, query_obj in enumerate(self._query_context.queries):
+            with chart_data_context(self._query_context, query_index=index):
+                query_results.append(
+                    get_query_results_with_timing(
+                        query_obj.result_type or self._query_context.result_type,
+                        self._query_context,
+                        query_obj,
+                        force_cached,
+                    )
+                )
 
         cache_key = None
         if cache_query_context:
@@ -705,7 +851,9 @@ class QueryContextProcessor:
                 self.get_cache_timeout(),
             )
 
-        return QueryContextExecutionResult(queries=query_results, cache_key=cache_key)
+        return QueryContextExecutionResult(
+            queries=tuple(query_results), cache_key=cache_key
+        )
 
     def get_cache_timeout(self) -> int:
         """

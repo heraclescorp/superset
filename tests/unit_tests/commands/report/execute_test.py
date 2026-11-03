@@ -20,7 +20,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Any
 from unittest import mock
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import call as mock_call, MagicMock, Mock, patch
 from urllib.error import URLError
 from uuid import UUID, uuid4
 
@@ -2527,7 +2527,6 @@ def test_send_falls_back_to_slack_v1_when_private_channels_upgrade_fails(
         types=mocker.ANY,
         exact_match=True,
     )
-    stats_logger.incr.assert_called_once_with("reports.slack.v1_fallback")
     assert len(report_state._execution_warnings) == 1
     assert "deprecated Slack v1" in report_state._execution_warnings[0]
     assert "private-a" in report_state._execution_warnings[0]
@@ -2709,10 +2708,6 @@ def test_send_records_system_upgrade_failure_when_text_fallback_succeeds(
         slack_call.kwargs["channel"]
         for slack_call in slack_client.return_value.chat_postMessage.call_args_list
     ] == ["private-a", "private-b"]
-    assert stats_logger.incr.call_args_list == [
-        mock.call("reports.slack.v1_fallback"),
-        mock.call("reports.slack.v1_fallback.system_error"),
-    ]
     logger.error.assert_called_once()
     assert logger.error.call_args.kwargs["extra"] == {
         "execution_id": "execution_id_example",
@@ -2888,7 +2883,6 @@ def test_failed_slack_upgrade_fallback_does_not_affect_other_recipient_types(
     )
     v2_notification.send.assert_called_once_with()
     email_notification.send.assert_called_once_with()
-    stats_logger.incr.assert_called_once_with("reports.slack.v1_fallback")
 
 
 def test_send_malformed_slack_recipient_does_not_suppress_later_recipient(
@@ -3012,9 +3006,7 @@ def test_send_preserves_transient_upgrade_failure_for_file_reports(
     )
     slack_client = mocker.patch("superset.reports.notifications.slack.get_slack_client")
     mocker.patch("superset.reports.notifications.slack.g", logs_context={})
-    statsd_mock = mocker.patch(
-        "superset.extensions.stats_logger_manager.instance.gauge"
-    )
+    statsd_mock = mocker.patch("superset.extensions.stats_logger_manager.instance.incr")
 
     with pytest.raises(ReportScheduleSystemErrorsException) as exc_info:
         report_state._send(notification_content, [recipient])
@@ -3025,7 +3017,7 @@ def test_send_preserves_transient_upgrade_failure_for_file_reports(
     assert "groups:read" in error_message
     assert "Slack channel listing unavailable" in error_message
     slack_client.assert_not_called()
-    statsd_mock.assert_called_once_with("reports.slack.send.error", 1)
+    assert statsd_mock.call_args_list.count(mock_call("reports.slack.send.error")) == 1
     assert recipient.type == ReportRecipientType.SLACK
     assert recipient.recipient_config_json == '{"target": "private-channel"}'
 

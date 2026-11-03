@@ -36,37 +36,42 @@ if TYPE_CHECKING:
     from superset.stats_logger import BaseStatsLogger
 
 
-def record_statsd_gauge_failure(metric_prefix: str, ex: Exception) -> None:
-    """Record a warning or error gauge using the shared exception contract."""
+def record_statsd_counter_failure(metric_prefix: str, ex: Exception) -> None:
+    """Count one warning/error outcome without affecting caller exceptions."""
     try:
         status = getattr(ex, "status", None)
     except Exception:  # pylint: disable=broad-exception-caught
         status = None
     suffix = "warning" if isinstance(status, int) and status < 500 else "error"
-    app.config["STATS_LOGGER"].gauge(f"{metric_prefix}.{suffix}", 1)
+    try:
+        app.config["STATS_LOGGER"].incr(f"{metric_prefix}.{suffix}")
+    except Exception:  # pylint: disable=broad-exception-caught  # noqa: S110
+        pass
 
 
-def statsd_gauge(
+def statsd_counter(
     metric_prefix: str | None = None,
     *,
     ignored_exceptions: tuple[type[Exception], ...] = (),
 ) -> Callable[..., Any]:
-    def decorate(f: Callable[..., Any]) -> Callable[..., Any]:
-        """
-        Handle sending statsd gauge metric from any method or function
-        """
+    """Count outcomes, never gauge accumulated deliveries; duration is OTEL."""
 
+    def decorate(f: Callable[..., Any]) -> Callable[..., Any]:
+        @wraps(f)
         def wrapped(*args: Any, **kwargs: Any) -> Any:
             metric_prefix_ = metric_prefix or f.__name__
             try:
                 result = f(*args, **kwargs)
-                app.config["STATS_LOGGER"].gauge(f"{metric_prefix_}.ok", 1)
-                return result
             except ignored_exceptions:
                 raise
             except Exception as ex:
-                record_statsd_gauge_failure(metric_prefix_, ex)
+                record_statsd_counter_failure(metric_prefix_, ex)
                 raise
+            try:
+                app.config["STATS_LOGGER"].incr(f"{metric_prefix_}.ok")
+            except Exception:  # pylint: disable=broad-exception-caught  # noqa: S110
+                pass
+            return result
 
         return wrapped
 

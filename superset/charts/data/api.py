@@ -49,12 +49,14 @@ from superset.commands.chart.exceptions import (
 )
 from superset.common.chart_data import ChartDataResultFormat, ChartDataResultType
 from superset.common.chart_data_timing import ChartDataExecutionResult
+from superset.common.query_context_processor import chart_data_context
 from superset.connectors.sqla.models import BaseDatasource
 from superset.constants import CACHE_DISABLED_TIMEOUT
 from superset.daos.exceptions import DatasourceNotFound
 from superset.exceptions import QueryObjectValidationError, SupersetSecurityException
 from superset.extensions import cache_manager, event_logger
 from superset.models.sql_lab import Query
+from superset.observability import is_enabled, operation
 from superset.tasks.async_queries import submit_chart_data_query_tasks
 from superset.tasks.guest import get_current_guest_subscriber_key
 from superset.utils import json
@@ -236,25 +238,32 @@ class ChartDataRestApi(ChartRestApi):
                 )
             )
 
-        # TODO: support CSV, SQL query and other non-JSON types
-        if self._should_run_async(json_body, query_context):
-            return self._run_async(json_body, command, add_extra_log_payload)
+        run_async = self._should_run_async(json_body, query_context)
+        with chart_data_context(
+            query_context,
+            chart_id=pk,
+            dashboard_id=filters_dashboard_id,
+            async_execution=run_async,
+        ):
+            # Async scheduling inherits this scope via trusted lifecycle headers.
+            if run_async:
+                return self._run_async(json_body, command, add_extra_log_payload)
 
-        try:
-            form_data = json.loads(chart.params)
-        except (TypeError, json.JSONDecodeError):
-            form_data = {}
-        if not isinstance(form_data, dict):
-            form_data = {}
+            try:
+                form_data = json.loads(chart.params)
+            except (TypeError, json.JSONDecodeError):
+                form_data = {}
+            if not isinstance(form_data, dict):
+                form_data = {}
 
-        return self._get_data_response(
-            command=command,
-            form_data=form_data,
-            datasource=query_context.datasource,
-            add_extra_log_payload=add_extra_log_payload,
-            dashboard_filter_context=dashboard_filter_context,
-            slice_=chart,
-        )
+            return self._get_data_response(
+                command=command,
+                form_data=form_data,
+                datasource=query_context.datasource,
+                add_extra_log_payload=add_extra_log_payload,
+                dashboard_filter_context=dashboard_filter_context,
+                slice_=chart,
+            )
 
     @expose("/data", methods=("POST",))
     @protect()
@@ -334,21 +343,22 @@ class ChartDataRestApi(ChartRestApi):
                 )
             )
 
-        # TODO: support CSV, SQL query and other non-JSON types
-        if self._should_run_async(json_body, query_context):
-            return self._run_async(json_body, command, add_extra_log_payload)
+        run_async = self._should_run_async(json_body, query_context)
+        with chart_data_context(query_context, async_execution=run_async):
+            if run_async:
+                return self._run_async(json_body, command, add_extra_log_payload)
 
-        form_data = json_body.get("form_data")
-        filename, expected_rows = self._extract_export_params_from_request()
+            form_data = json_body.get("form_data")
+            filename, expected_rows = self._extract_export_params_from_request()
 
-        return self._get_data_response(
-            command,
-            form_data=form_data,
-            datasource=query_context.datasource,
-            add_extra_log_payload=add_extra_log_payload,
-            filename=filename,
-            expected_rows=expected_rows,
-        )
+            return self._get_data_response(
+                command,
+                form_data=form_data,
+                datasource=query_context.datasource,
+                add_extra_log_payload=add_extra_log_payload,
+                filename=filename,
+                expected_rows=expected_rows,
+            )
 
     @staticmethod
     def _should_run_async(
@@ -573,13 +583,18 @@ class ChartDataRestApi(ChartRestApi):
             if dashboard_filter_context is not None:
                 payload["dashboard_filters"] = dashboard_filter_context.to_dict()
 
-            with event_logger.log_context(f"{self.__class__.__name__}.json_dumps"):
+            with (
+                event_logger.log_context(f"{self.__class__.__name__}.json_dumps"),
+                operation("chart.response.serialize") as observation,
+            ):
                 response_data = json.dumps(
                     payload,
                     default=json.json_int_dttm_ser,
                     ignore_nan=True,
                 )
-            resp = make_response(response_data, 200)
+                resp = make_response(response_data, 200)
+                if is_enabled():
+                    observation.set_attribute("result_bytes", resp.content_length)
             resp.headers["Content-Type"] = "application/json; charset=utf-8"
             return resp
 
@@ -760,7 +775,8 @@ class ChartDataRestApi(ChartRestApi):
         """
 
         try:
-            return ChartDataQueryContextSchema().load(form_data)
+            with operation("chart.context.plan"):
+                return ChartDataQueryContextSchema().load(form_data)
         except KeyError as ex:
             raise ValidationError("Request is incorrect") from ex
         except ValueError as ex:
@@ -875,7 +891,7 @@ class ChartDataRestApi(ChartRestApi):
 
         # Create response with streaming headers
         response = Response(
-            csv_generator_callable(),  # Call the callable to get generator
+            csv_generator_callable(),
             # Use content_type (not mimetype) so the charset is set verbatim;
             # passing a charset via mimetype makes Werkzeug append a second
             # charset, producing a malformed doubled Content-Type header.

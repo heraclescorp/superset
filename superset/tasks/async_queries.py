@@ -25,6 +25,7 @@ from flask import current_app
 from flask_appbuilder.security.sqla.models import User
 from superset_core.tasks.types import TaskOptions, TaskScope
 
+from superset.common.query_context_processor import chart_data_context
 from superset.common.query_serialization import (
     load_serialized_query,
     serialize_query,
@@ -315,7 +316,10 @@ def execute_chart_query(
         if requires_totals:
             _inject_contribution_totals(query_obj, _get_dependency_cache_key())
         # Executes on cache miss and writes CacheRegion.DATA under query_cache_key.
-        with _capture_query_cancellation(query_context):
+        with (
+            chart_data_context(query_context, async_execution=True),
+            _capture_query_cancellation(query_context),
+        ):
             result = query_context.get_df_payload_result(query_obj)
         if cache_key := result.payload.get(CACHE_KEY_PAYLOAD_KEY):
             # Write synchronously: a dependent contribution query reads this
@@ -421,21 +425,24 @@ def submit_chart_data_query_tasks(
         index: int,
         depends_on: "list[CoreTask | UUID | str] | None" = None,
     ) -> "Task":
-        return execute_chart_query.schedule(
-            serialized_queries[index],
-            user_id,
-            guest_token,
-            _needs_prerequisite_totals(index),
-            options=TaskOptions(
-                task_key=query_cache_keys[index],
-                task_name=_task_name(index),
-                depends_on=depends_on,
-                # Abort the query after this many seconds; for cancellable
-                # engines the abort handler kills the warehouse query too.
-                # None (default) leaves it unbounded.
-                timeout=current_app.config.get("GLOBAL_ASYNC_QUERIES_QUERY_TIMEOUT"),
-            ),
-        )
+        # Bind before schedule: lifecycle copies only this trusted metadata into
+        # Celery headers. Neither serialization nor the SHARED task key changes.
+        with chart_data_context(query_context, query_index=index, async_execution=True):
+            return execute_chart_query.schedule(
+                serialized_queries[index],
+                user_id,
+                guest_token,
+                _needs_prerequisite_totals(index),
+                options=TaskOptions(
+                    task_key=query_cache_keys[index],
+                    task_name=_task_name(index),
+                    depends_on=depends_on,
+                    # Abort cancellable queries after the configured timeout.
+                    timeout=current_app.config.get(
+                        "GLOBAL_ASYNC_QUERIES_QUERY_TIMEOUT"
+                    ),
+                ),
+            )
 
     # Schedule the totals query first so contribution queries can depend on it.
     tasks: dict[int, "Task"] = {}

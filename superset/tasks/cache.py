@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from typing import Any, Optional, Union
+from uuid import uuid4
 
 from celery.utils.log import get_task_logger
 from flask import current_app
@@ -31,6 +32,8 @@ from superset.daos.dashboard import DashboardDAO
 from superset.extensions import celery_app
 from superset.models.core import Log
 from superset.models.dashboard import Dashboard
+from superset.observability import is_enabled, operation, telemetry_context
+from superset.observability.lifecycle import set_task_outcome
 from superset.tags.models import Tag, TaggedObject
 from superset.tasks.native_filter_cache import (
     build_native_filter_option_form_data,
@@ -338,9 +341,10 @@ def _warmup_urls(
         for url in urls:
             try:
                 logger.info("Fetching %s", url)
-                screenshot = wd.get_screenshot(url, "grid-container", user=user)
-                if not screenshot:
-                    raise RuntimeError("No screenshot captured")
+                with operation("warmup.capture", phase="capture"):
+                    screenshot = wd.get_screenshot(url, "grid-container", user=user)
+                    if not screenshot:
+                        raise RuntimeError("No screenshot captured")
                 results["success"].append(url)
             except Exception:  # noqa: BLE001
                 logger.exception("Error warming up cache for %s", url)
@@ -359,6 +363,27 @@ def cache_warmup(
     This task periodically hits dashboards to warm up the cache.
 
     """
+    if not is_enabled():
+        return _cache_warmup(strategy_name, *args, **kwargs)
+    run_id = cache_warmup.request.id or str(uuid4())
+    with (
+        telemetry_context(source="warmup", warmup_run_id=run_id),
+        operation("warmup.execute") as observation,
+    ):
+        result = _cache_warmup(strategy_name, *args, **kwargs)
+        outcome = (
+            "error"
+            if isinstance(result, str)
+            else ("partial" if result["errors"] else "success")
+        )
+        observation.set_attribute("outcome", outcome)
+        set_task_outcome("error" if outcome == "partial" else outcome)
+        return result
+
+
+def _cache_warmup(
+    strategy_name: str, *args: Any, **kwargs: Any
+) -> Union[dict[str, list[str]], str]:
     logger.info("Loading strategy")
     class_: type[Strategy] | None = strategy_registry.get(strategy_name)
     if class_ is None:
@@ -395,6 +420,13 @@ def cache_warmup(
         logger.error(message)
         return message
 
+    with telemetry_context(effective_user_id=user.id):
+        return _run_warmup(strategy, user, results)
+
+
+def _run_warmup(
+    strategy: Strategy, user: Any, results: dict[str, list[str]]
+) -> dict[str, list[str]]:
     if not strategy.uses_webdriver:
         # pylint: disable=import-outside-toplevel
         from superset.commands.chart.data.get_data_command import ChartDataCommand
@@ -409,9 +441,13 @@ def cache_warmup(
                 )
                 try:
                     logger.info("Warming up cache for %s", task_name)
-                    command: Any = ChartDataCommand(task.query_context)
-                    command.validate()
-                    command.run(cache=True)
+                    with (
+                        telemetry_context(dashboard_id=task.dashboard_id),
+                        operation("warmup.query"),
+                    ):
+                        command: Any = ChartDataCommand(task.query_context)
+                        command.validate()
+                        command.run(cache=True)
                     results["success"].append(task_name)
                 except Exception:  # noqa: BLE001
                     logger.exception("Error warming up cache for %s", task_name)

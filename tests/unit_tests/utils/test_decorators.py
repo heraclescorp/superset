@@ -17,6 +17,7 @@
 
 
 import logging
+import re
 import uuid
 from contextlib import nullcontext
 from inspect import isclass
@@ -80,10 +81,10 @@ def test_debounce() -> None:
         (ResponseValues.WARN, WarningError, "custom.prefix.warning"),
     ],
 )
-def test_statsd_gauge(
+def test_statsd_counter(
     response_value: str, expected_exception: Optional[Exception], expected_result: str
 ) -> None:
-    @decorators.statsd_gauge("custom.prefix")
+    @decorators.statsd_counter("custom.prefix")
     def my_func(response: ResponseValues, *args: Any, **kwargs: Any) -> str:
         if response == ResponseValues.FAIL:
             raise ValueError("Error")
@@ -91,7 +92,7 @@ def test_statsd_gauge(
             raise WarningError("Warning")
         return "OK"
 
-    with patch("superset.extensions.stats_logger_manager.instance.gauge") as mock:
+    with patch("superset.extensions.stats_logger_manager.instance.incr") as mock:
         cm = (
             pytest.raises(expected_exception)
             if isclass(expected_exception) and issubclass(expected_exception, Exception)
@@ -101,14 +102,14 @@ def test_statsd_gauge(
         with cm:
             my_func(response_value, 1, 2)
 
-        mock.assert_called_once_with(expected_result, 1)
+        mock.assert_called_once_with(expected_result)
 
 
-def test_statsd_gauge_ignores_configured_exception() -> None:
+def test_statsd_counter_ignores_configured_exception() -> None:
     class RoutingSignalError(Exception):
         pass
 
-    @decorators.statsd_gauge(
+    @decorators.statsd_counter(
         "custom.prefix",
         ignored_exceptions=(RoutingSignalError,),
     )
@@ -116,7 +117,7 @@ def test_statsd_gauge_ignores_configured_exception() -> None:
         raise RoutingSignalError
 
     with (
-        patch("superset.extensions.stats_logger_manager.instance.gauge") as mock,
+        patch("superset.extensions.stats_logger_manager.instance.incr") as mock,
         pytest.raises(RoutingSignalError),
     ):
         my_func()
@@ -133,14 +134,14 @@ def test_statsd_gauge_ignores_configured_exception() -> None:
         (UnreadableStatusError("unreadable status"), "custom.prefix.error"),
     ],
 )
-def test_record_statsd_gauge_failure_uses_shared_severity_contract(
+def test_record_statsd_counter_failure_uses_shared_severity_contract(
     exception: Exception,
     expected_metric: str,
 ) -> None:
-    with patch("superset.extensions.stats_logger_manager.instance.gauge") as mock:
-        decorators.record_statsd_gauge_failure("custom.prefix", exception)
+    with patch("superset.extensions.stats_logger_manager.instance.incr") as mock:
+        decorators.record_statsd_counter_failure("custom.prefix", exception)
 
-    mock.assert_called_once_with(expected_metric, 1)
+    mock.assert_called_once_with(expected_metric)
 
 
 @patch("superset.utils.decorators.g")
@@ -400,3 +401,25 @@ def test_transacation_nested(mocker: MockerFixture) -> None:
         nested()
     db.session.commit.assert_not_called()
     db.session.rollback.assert_called_once()
+
+
+def test_statsd_counter_export_failure_preserves_result_and_original_exception():
+    original = ValueError("business failure")
+    result = object()
+
+    @decorators.statsd_counter("custom.prefix")
+    def success():
+        return result
+
+    @decorators.statsd_counter("custom.prefix")
+    def failure():
+        raise original
+
+    with patch(
+        "superset.extensions.stats_logger_manager.instance.incr",
+        side_effect=RuntimeError("metrics unavailable"),
+    ):
+        assert success() is result
+        with pytest.raises(ValueError, match=re.escape(str(original))) as exception:
+            failure()
+        assert exception.value is original

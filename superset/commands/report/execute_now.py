@@ -33,6 +33,8 @@ from superset.commands.report.exceptions import (
 )
 from superset.daos.report import ReportScheduleDAO
 from superset.exceptions import SupersetSecurityException
+from superset.observability import telemetry_context
+from superset.observability.lifecycle import observed
 from superset.reports.models import ReportSchedule, ReportScheduleType
 from superset.utils.report_execution import get_report_task_timeout_options
 
@@ -53,6 +55,7 @@ class ExecuteReportScheduleNowCommand(BaseCommand):
         self._model_id = model_id
         self._model: Optional[ReportSchedule] = None
 
+    @observed("report.schedule", source="report")
     def run(self) -> str:
         """
         Execute the command and return an execution UUID for tracking.
@@ -98,7 +101,10 @@ class ExecuteReportScheduleNowCommand(BaseCommand):
             )
 
             try:
-                execute.apply_async((self._model.id,), **async_options)
+                with telemetry_context(
+                    source="report", report_schedule_id=self._model.id
+                ):
+                    execute.apply_async((self._model.id,), **async_options)
             except KombuOperationalError as celery_ex:
                 logger.error("Celery backend not configured: %s", str(celery_ex))
                 raise ReportScheduleCeleryNotConfiguredError() from celery_ex

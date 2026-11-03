@@ -352,7 +352,7 @@ def test_v1_upgrade_handoff_does_not_record_terminal_send_metric(
     )
 
     with (
-        patch("superset.extensions.stats_logger_manager.instance.gauge") as statsd_mock,
+        patch("superset.extensions.stats_logger_manager.instance.incr") as statsd_mock,
         pytest.raises(SlackV1NotificationError),
     ):
         notification.send()
@@ -449,14 +449,14 @@ def test_v1_file_send_records_v2_probe_failure_metric(
     )
 
     with (
-        patch("superset.extensions.stats_logger_manager.instance.gauge") as statsd_mock,
+        patch("superset.extensions.stats_logger_manager.instance.incr") as statsd_mock,
         pytest.raises(type(probe_error)),
     ):
         notification.send()
 
     should_use_v2_api_mock.assert_called_once_with(raise_on_error=True)
     slack_client_mock.assert_not_called()
-    statsd_mock.assert_called_once_with(metric, 1)
+    assert statsd_mock.call_args_list.count(call(metric)) == 1
 
 
 @patch(
@@ -1690,13 +1690,11 @@ def test_v2_send_retries_then_succeeds_on_explicit_http_rate_limit(
     content = _make_content(mock_header_data)
     notification = _make_v2_notification(content, target="C12345")
 
-    with patch(
-        "superset.extensions.stats_logger_manager.instance.gauge"
-    ) as statsd_mock:
+    with patch("superset.extensions.stats_logger_manager.instance.incr") as statsd_mock:
         notification.send()
 
     assert slack_client_mock.return_value.chat_postMessage.call_count == 3
-    statsd_mock.assert_called_with("reports.slack.send.ok", 1)
+    assert statsd_mock.call_args_list.count(call("reports.slack.send.ok")) == 1
 
 
 @patch("superset.reports.notifications.slackv2.g")
@@ -2348,7 +2346,7 @@ def test_call_slack_api_does_not_retry_empty_client_error_response() -> None:
 
 @patch("superset.reports.notifications.slackv2.g")
 @patch("superset.reports.notifications.slackv2.get_slack_client")
-def test_v2_send_records_statsd_gauge_on_success(
+def test_v2_send_records_statsd_counter_on_success(
     slack_client_mock: MagicMock,
     flask_global_mock: MagicMock,
     mock_header_data,
@@ -2357,17 +2355,15 @@ def test_v2_send_records_statsd_gauge_on_success(
     content = _make_content(mock_header_data)
     notification = _make_v2_notification(content, target="C12345")
 
-    with patch(
-        "superset.extensions.stats_logger_manager.instance.gauge"
-    ) as statsd_mock:
+    with patch("superset.extensions.stats_logger_manager.instance.incr") as statsd_mock:
         notification.send()
 
-    statsd_mock.assert_called_with("reports.slack.send.ok", 1)
+    assert statsd_mock.call_args_list.count(call("reports.slack.send.ok")) == 1
 
 
 @patch("superset.reports.notifications.slackv2.g")
 @patch("superset.reports.notifications.slackv2.get_slack_client")
-def test_v2_send_records_statsd_gauge_warning_on_param_error(
+def test_v2_send_records_statsd_counter_warning_on_param_error(
     slack_client_mock: MagicMock,
     flask_global_mock: MagicMock,
     mock_header_data,
@@ -2381,13 +2377,11 @@ def test_v2_send_records_statsd_gauge_warning_on_param_error(
     content = _make_content(mock_header_data)
     notification = _make_v2_notification(content, target="C12345")
 
-    with patch(
-        "superset.extensions.stats_logger_manager.instance.gauge"
-    ) as statsd_mock:
+    with patch("superset.extensions.stats_logger_manager.instance.incr") as statsd_mock:
         with pytest.raises(NotificationParamException):
             notification.send()
 
-    assert call("reports.slack.send.warning", 1) in statsd_mock.call_args_list
+    assert statsd_mock.call_args_list.count(call("reports.slack.send.warning")) == 1
 
 
 @patch("superset.reports.notifications.slackv2.g")

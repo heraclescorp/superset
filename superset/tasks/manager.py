@@ -26,6 +26,7 @@ import redis
 from flask import has_app_context
 from superset_core.tasks.types import TaskProperties, TaskScope, TaskStatus
 
+from superset.observability import get_context, telemetry_context
 from superset.tasks.constants import ABORT_STATES, TERMINAL_STATES
 from superset.tasks.utils import generate_random_task_key
 
@@ -590,12 +591,17 @@ class TaskManager:
             from superset.tasks.scheduler import execute_task
 
             try:
-                execute_task.delay(
-                    task_uuid=str(task.uuid),
+                with telemetry_context(
+                    task_id=str(task.uuid),
                     task_type=task_type,
-                    args=args,
-                    kwargs=kwargs,
-                )
+                    parent_task_id=get_context().get("task_id"),
+                ):
+                    execute_task.delay(
+                        task_uuid=str(task.uuid),
+                        task_type=task_type,
+                        args=args,
+                        kwargs=kwargs,
+                    )
             except Exception:
                 # The task row is committed but the broker rejected the enqueue
                 # (e.g. broker down). Leaving it PENDING would poison the dedup

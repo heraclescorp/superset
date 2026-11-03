@@ -32,6 +32,8 @@ from superset.commands.tasks.exceptions import (
     TaskPermissionDeniedError,
 )
 from superset.extensions import security_manager
+from superset.observability import emit_event, increment, operation, telemetry_context
+from superset.observability.lifecycle import task_transition
 from superset.stats_logger import BaseStatsLogger
 from superset.tasks.constants import TERMINAL_STATES
 from superset.tasks.guest import get_guest_subscriber_key_for
@@ -91,6 +93,10 @@ class CancelTaskCommand(BaseCommand):
         self._completed_status: str | None = None
 
     def run(self) -> "Task":
+        with telemetry_context(task_id=str(self._task_uuid)), operation("task.cancel"):
+            return self._run()
+
+    def _run(self) -> "Task":
         """
         Execute the cancel command with distributed locking.
 
@@ -147,6 +153,16 @@ class CancelTaskCommand(BaseCommand):
         # A cancelled prerequisite fails its dependents' all-success gate, and its
         # status shows on their rows, so refresh those too.
         TaskManager.publish_required_by_changed(self._task_uuid)
+        emit_event(
+            "task.cancelled",
+            task_id=str(self._task_uuid),
+            task_type=result.task_type,
+            consumer_action=self._action_taken,
+            force_cancel=self._force,
+        )
+        increment("task.cancellations", consumer_action=self._action_taken)
+        if self._completed_status is not None:
+            task_transition(str(self._task_uuid), self._completed_status)
 
         return result
 
