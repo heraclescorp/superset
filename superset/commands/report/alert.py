@@ -40,6 +40,7 @@ from superset.commands.report.exceptions import (
     ReportScheduleExecutorNotFoundError,
 )
 from superset.exceptions import SupersetSecurityException
+from superset.observability.lifecycle import observed
 from superset.reports.models import ReportSchedule, ReportScheduleValidatorType
 from superset.sql.parse import SQLScript
 from superset.tasks.utils import get_executor
@@ -64,6 +65,7 @@ class AlertCommand(BaseCommand):
         self._result: float | None = None
         self._info_message: str | None = None
 
+    @observed("report.evaluate", phase="evaluation")
     def run(self) -> tuple[bool, str | None]:
         """
         Executes an alert SQL query and validates it.

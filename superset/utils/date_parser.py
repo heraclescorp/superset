@@ -51,12 +51,6 @@ from superset.constants import InstantTimeComparison, LRU_CACHE_MAX_SIZE, NO_TIM
 
 ParserElement.enable_packrat()
 
-# parsedatetime emits a noisy DEBUG record ("eval now with context - False, False")
-# on every relative-date evaluation. Superset has no actionable use for that
-# internal trace, and it floods production logs whenever the root logger is at
-# DEBUG. Suppress the library's own logger to WARNING; real failures still
-# surface, just not the per-call chatter.
-logging.getLogger("parsedatetime").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 

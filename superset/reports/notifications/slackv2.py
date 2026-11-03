@@ -56,7 +56,7 @@ from superset.reports.notifications.slack_transport import (
     send_to_slack_channels,
     SlackChannelResponseError,
 )
-from superset.utils.decorators import statsd_gauge
+from superset.utils.decorators import statsd_counter
 from superset.utils.slack import (
     get_slack_client,
     NO_SLACK_RECIPIENTS_MESSAGE,
@@ -184,7 +184,7 @@ class SlackV2Notification(SlackMixin, BaseNotification):  # pylint: disable=too-
             return ("pdf", [self._content.pdf])
         return (None, [])
 
-    @statsd_gauge("reports.slack.send")
+    @statsd_counter("reports.slack.send")
     def send(self) -> None:
         global_logs_context = getattr(g, "logs_context", {}) or {}
         try:

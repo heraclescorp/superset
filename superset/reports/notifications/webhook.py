@@ -35,7 +35,7 @@ from superset.reports.notifications.exceptions import (
     NotificationUnprocessableException,
 )
 from superset.utils import json
-from superset.utils.decorators import statsd_gauge
+from superset.utils.decorators import statsd_counter
 from superset.utils.network import is_safe_host, is_safe_ip
 
 logger = logging.getLogger(__name__)
@@ -272,7 +272,7 @@ class WebhookNotification(BaseNotification):
         # legitimately-transient 5xx targets are not abandoned early.
         max_time=120,
     )
-    @statsd_gauge("reports.webhook.send")
+    @statsd_counter("reports.webhook.send")
     def send(self) -> None:
         if not feature_flag_manager.is_feature_enabled("ALERT_REPORT_WEBHOOK"):
             raise NotificationUnprocessableException(

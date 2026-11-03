@@ -34,6 +34,7 @@ from superset.commands.tasks.exceptions import (
     TaskInvalidError,
 )
 from superset.daos.exceptions import DAOCreateFailedError
+from superset.observability.lifecycle import task_relationship
 from superset.stats_logger import BaseStatsLogger
 from superset.tasks.guest import get_guest_subscriber_key_for
 from superset.tasks.locks import task_lock
@@ -142,9 +143,11 @@ class SubmitTaskCommand(BaseCommand):
         # Acquire the lock around the whole transaction (see docstring): it is
         # released only after _create_or_join commits.
         with task_lock(dedup_key):
-            return self._create_or_join(
+            task, created = self._create_or_join(
                 task_type, task_key, scope, user_id, guest_key, tab_id
             )
+        task_relationship(str(task.uuid), created, task_type)
+        return task, created
 
     @transaction(on_error=partial(on_error, reraise=TaskCreateFailedError))
     def _create_or_join(

@@ -1426,7 +1426,7 @@ def test_email_dashboard_report_schedule(
 
     with freeze_time("2020-01-01T00:00:00Z"):
         with patch(
-            "superset.extensions.stats_logger_manager.instance.gauge"
+            "superset.extensions.stats_logger_manager.instance.incr"
         ) as statsd_mock:
             AsyncExecuteReportScheduleCommand(
                 TEST_ID, create_report_email_dashboard.id, datetime.utcnow()
@@ -1442,7 +1442,7 @@ def test_email_dashboard_report_schedule(
             assert smtp_images[list(smtp_images.keys())[0]] == SCREENSHOT_FILE
             # Assert logs are correct
             assert_log(ReportState.SUCCESS)
-            statsd_mock.assert_called_once_with("reports.email.send.ok", 1)
+            assert statsd_mock.call_args_list.count(call("reports.email.send.ok")) == 1
 
 
 @pytest.mark.usefixtures("tabbed_dashboard")
@@ -1460,7 +1460,7 @@ def test_email_dashboard_report_schedule_with_tab_anchor(
     """
     with freeze_time("2020-01-01T00:00:00Z"):
         with patch(
-            "superset.extensions.stats_logger_manager.instance.gauge"
+            "superset.extensions.stats_logger_manager.instance.incr"
         ) as statsd_mock:
             # get tabbed dashboard fixture
             dashboard = db.session.query(Dashboard).all()[1]
@@ -1483,7 +1483,7 @@ def test_email_dashboard_report_schedule_with_tab_anchor(
 
             # Assert logs are correct
             assert_log(ReportState.SUCCESS)
-            statsd_mock.assert_called_once_with("reports.email.send.ok", 1)
+            assert statsd_mock.call_args_list.count(call("reports.email.send.ok")) == 1
 
             pl = (
                 db.session.query(KeyValueEntry)
@@ -1516,7 +1516,7 @@ def test_email_dashboard_report_schedule_disabled_tabs(
     """
     with freeze_time("2020-01-01T00:00:00Z"):
         with patch(
-            "superset.extensions.stats_logger_manager.instance.gauge"
+            "superset.extensions.stats_logger_manager.instance.incr"
         ) as statsd_mock:
             # get tabbed dashboard fixture
             dashboard = db.session.query(Dashboard).all()[1]
@@ -1539,7 +1539,7 @@ def test_email_dashboard_report_schedule_disabled_tabs(
 
             # Assert logs are correct
             assert_log(ReportState.SUCCESS)
-            statsd_mock.assert_called_once_with("reports.email.send.ok", 1)
+            assert statsd_mock.call_args_list.count(call("reports.email.send.ok")) == 1
 
             permalinks = db.session.query(KeyValueEntry).all()
 
@@ -1622,7 +1622,7 @@ def test_slack_chart_report_schedule_converts_to_v2(
 
     with freeze_time("2020-01-01T00:00:00Z"):
         with patch(
-            "superset.extensions.stats_logger_manager.instance.gauge"
+            "superset.extensions.stats_logger_manager.instance.incr"
         ) as statsd_mock:
             AsyncExecuteReportScheduleCommand(
                 TEST_ID, create_report_slack_chart.id, datetime.utcnow()
@@ -1645,7 +1645,7 @@ def test_slack_chart_report_schedule_converts_to_v2(
 
             # Assert logs are correct
             assert_log(ReportState.SUCCESS)
-            statsd_mock.assert_called_once_with("reports.slack.send.ok", 1)
+            assert statsd_mock.call_args_list.count(call("reports.slack.send.ok")) == 1
 
 
 @patch(
@@ -1687,7 +1687,7 @@ def test_slack_chart_report_schedule_converts_to_v2_channel_with_hash(
 
     with freeze_time("2020-01-01T00:00:00Z"):
         with patch(
-            "superset.extensions.stats_logger_manager.instance.gauge"
+            "superset.extensions.stats_logger_manager.instance.incr"
         ) as statsd_mock:
             AsyncExecuteReportScheduleCommand(
                 TEST_ID, report_schedule.id, datetime.utcnow()
@@ -1707,7 +1707,7 @@ def test_slack_chart_report_schedule_converts_to_v2_channel_with_hash(
 
             # Assert logs are correct
             assert_log(ReportState.SUCCESS)
-            statsd_mock.assert_called_once_with("reports.slack.send.ok", 1)
+            assert statsd_mock.call_args_list.count(call("reports.slack.send.ok")) == 1
 
     cleanup_report_schedule(report_schedule)
 
@@ -1747,7 +1747,7 @@ def test_slack_chart_report_schedule_failed_v2_conversion_rejects_v1_file_upload
     try:
         with (
             patch(
-                "superset.extensions.stats_logger_manager.instance.gauge"
+                "superset.extensions.stats_logger_manager.instance.incr"
             ) as statsd_mock,
             pytest.raises(ReportScheduleClientErrorsException),
         ):
@@ -1771,9 +1771,7 @@ def test_slack_chart_report_schedule_failed_v2_conversion_rejects_v1_file_upload
         )
         assert report_schedule.recipients[0].type == ReportRecipientType.SLACK
         slack_client_mock.assert_not_called()
-        assert (
-            statsd_mock.call_args_list.count(call("reports.slack.send.warning", 1)) == 1
-        )
+        assert statsd_mock.call_args_list.count(call("reports.slack.send.warning")) == 1
     finally:
         cleanup_report_schedule(report_schedule)
 
@@ -1798,7 +1796,7 @@ def test_slack_chart_report_schedule_v2(
 
     with freeze_time("2020-01-01T00:00:00Z"):
         with patch(
-            "superset.extensions.stats_logger_manager.instance.gauge"
+            "superset.extensions.stats_logger_manager.instance.incr"
         ) as statsd_mock:
             AsyncExecuteReportScheduleCommand(
                 TEST_ID, create_report_slack_chartv2.id, datetime.utcnow()
@@ -1812,7 +1810,7 @@ def test_slack_chart_report_schedule_v2(
 
             # Assert logs are correct
             assert_log(ReportState.SUCCESS)
-            assert statsd_mock.call_args_list[0] == call("reports.slack.send.ok", 1)
+            assert statsd_mock.call_args_list.count(call("reports.slack.send.ok")) == 1
 
 
 @pytest.mark.usefixtures(
@@ -2053,9 +2051,7 @@ def test_slack_text_fallback_persists_success_for_multiple_recipient_rows(
     db.session.commit()
     report_schedule_id = create_report_slack_chart_with_text.id
 
-    with patch(
-        "superset.extensions.stats_logger_manager.instance.gauge"
-    ) as statsd_mock:
+    with patch("superset.extensions.stats_logger_manager.instance.incr") as statsd_mock:
         AsyncExecuteReportScheduleCommand(
             TEST_ID,
             report_schedule_id,
@@ -2078,9 +2074,14 @@ def test_slack_text_fallback_persists_success_for_multiple_recipient_rows(
         for slack_call in slack_client_mock.return_value.chat_postMessage.call_args_list
     } == {"private-a", "private-b"}
     assert slack_client_mock.return_value.chat_postMessage.call_count == 2
-    assert statsd_mock.call_args_list == [
-        call("reports.slack.send.ok", 1),
-        call("reports.slack.send.ok", 1),
+    send_outcomes = [
+        recorded
+        for recorded in statsd_mock.call_args_list
+        if recorded.args and recorded.args[0].startswith("reports.slack.send.")
+    ]
+    assert send_outcomes == [
+        call("reports.slack.send.ok"),
+        call("reports.slack.send.ok"),
     ]
     assert slack_should_use_v2_api_mock.call_count == 1
     get_channels_with_search_mock.assert_called_once_with(

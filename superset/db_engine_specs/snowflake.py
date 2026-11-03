@@ -30,7 +30,8 @@ from cryptography.hazmat.primitives import serialization
 from flask import current_app as app, has_request_context
 from flask_babel import gettext as __
 from marshmallow import fields, Schema
-from sqlalchemy import text, types
+from sqlalchemy import event, text, types
+from sqlalchemy.engine import Engine
 from sqlalchemy.engine.reflection import Inspector
 from sqlalchemy.engine.url import URL
 from sqlalchemy.exc import DatabaseError as SqlalchemyDatabaseError
@@ -49,13 +50,23 @@ from superset.db_engine_specs.postgres import PostgresBaseEngineSpec
 from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
 from superset.exceptions import OAuth2TokenRefreshError
 from superset.models.sql_lab import Query
+from superset.observability import is_enabled
+from superset.observability.sql import (
+    execute_tagged_sqlalchemy,
+    execute_with_statement_tag,
+    observe_statement,
+)
 from superset.superset_typing import (
     OAuth2ClientConfig,
     OAuth2State,
 )
 from superset.utils import json
 from superset.utils.core import get_user_agent, QuerySource
-from superset.utils.oauth2 import encode_oauth2_state, generate_code_challenge
+from superset.utils.oauth2 import (
+    encode_oauth2_state,
+    generate_code_challenge,
+    is_oauth2_retry_active,
+)
 
 if TYPE_CHECKING:
     from superset.models.core import Database
@@ -516,6 +527,39 @@ class SnowflakeEngineSpec(PostgresBaseEngineSpec):
         database.extra = json.dumps(extra)
 
     @classmethod
+    def register_engine_events(cls, engine: Engine) -> None:
+        """Install the explicit per-statement streaming tag hook before caching."""
+        super().register_engine_events(engine)
+        event.listen(engine, "do_execute", execute_tagged_sqlalchemy)
+
+    @classmethod
+    def execute(
+        cls,
+        cursor: Any,
+        query: str,
+        database: Database,
+        **_kwargs: Any,
+    ) -> None:
+        """Apply request-only QUERY_TAG while retaining base OAuth/error semantics.
+
+        Connector 4.8.0 supports ``_statement_params`` on ``execute``. It sends
+        parameters on the individual request; there is no ALTER SESSION, reset
+        query, implicit commit, or pooled-connection tag leakage.
+        """
+        if cls.arraysize:
+            cursor.arraysize = cls.arraysize
+        try:
+            execute_with_statement_tag(cursor, query)
+        except Exception as ex:
+            if (
+                not is_oauth2_retry_active()
+                and database.is_oauth2_enabled()
+                and cls.needs_oauth2(ex)
+            ):
+                cls.start_oauth2_dance(database)
+            raise cls.get_dbapi_mapped_exception(ex) from ex
+
+    @classmethod
     def get_cancel_query_id(cls, cursor: Any, query: Query) -> Optional[str]:
         """
         Get Snowflake session ID that will be used to cancel all other running
@@ -525,9 +569,19 @@ class SnowflakeEngineSpec(PostgresBaseEngineSpec):
         :param query: Query instance
         :return: Snowflake Session ID
         """
-        cursor.execute("SELECT CURRENT_SESSION()")
-        row = cursor.fetchone()
-        return row[0]
+        sql = "SELECT CURRENT_SESSION()"
+        if not is_enabled():
+            cursor.execute(sql)
+            return cursor.fetchone()[0]
+        with observe_statement(
+            query.database, cursor, sql, source="metadata"
+        ) as observed:
+            with observed.execute():
+                execute_with_statement_tag(cursor, sql)
+            with observed.fetch() as fetched:
+                row = cursor.fetchone()
+                fetched.set_attribute("rows", int(row is not None))
+            return row[0]
 
     @classmethod
     def cancel_query(cls, cursor: Any, query: Query, cancel_query_id: str) -> bool:
@@ -545,7 +599,21 @@ class SnowflakeEngineSpec(PostgresBaseEngineSpec):
             return False
 
         try:
-            cursor.execute(f"SELECT SYSTEM$CANCEL_ALL_QUERIES({cancel_query_id})")
+            sql = f"SELECT SYSTEM$CANCEL_ALL_QUERIES({cancel_query_id})"
+            if not is_enabled():
+                cursor.execute(sql)
+                return True
+            with (
+                observe_statement(
+                    query.database,
+                    cursor,
+                    sql,
+                    source="system",
+                    consumer_action="cancel",
+                ) as observed,
+                observed.execute(),
+            ):
+                execute_with_statement_tag(cursor, sql)
         except Exception:  # pylint: disable=broad-except
             return False
 

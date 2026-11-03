@@ -61,8 +61,13 @@ from superset.exceptions import (
 )
 from superset.extensions import celery_app, event_logger
 from superset.models.sql_lab import Query
+from superset.observability import is_enabled, operation
+from superset.observability.sql import dataframe_attributes, observe_statement
 from superset.result_set import SupersetResultSet
-from superset.sql.execution.executor import build_statement_blocks
+from superset.sql.execution.executor import (
+    build_statement_blocks,
+    sql_lab_query_context,
+)
 from superset.sql.parse import BaseSQLStatement, CTASMethod, SQLScript, Table
 from superset.sqllab.limiting_factor import LimitingFactor
 from superset.sqllab.utils import write_ipc_buffer
@@ -308,95 +313,113 @@ def execute_query(  # pylint: disable=too-many-statements, too-many-locals  # no
     query: Query,
     cursor: Any,
     log_params: Optional[dict[str, Any]] = None,
+    *,
+    statement_index: int = 0,
 ) -> SupersetResultSet:
-    """Executes a single SQL statement"""
+    """Execute one statement, observing only its driver execute/fetch boundaries."""
     database: Database = query.database
     db_engine_spec = database.db_engine_spec
 
-    try:
-        log_query = app.config["QUERY_LOGGER"]
-        if log_query:
-            log_query(
-                query.database.sqlalchemy_uri,
-                query.executed_sql,
-                query.schema,
-                __name__,
-                security_manager,
-                log_params,
-            )
-        db.session.commit()
-        # Eagerly reload query attributes so no lazy-load triggers a new
-        # metadata DB connection during the (potentially long) cursor
-        # execution. With NullPool each lazy-load opens a fresh connection
-        # that stays idle for the query duration; if the query runs longer
-        # than the DB's idle_in_transaction_session_timeout the connection
-        # is killed, leaving the query stuck in "running" state forever.
-        db.session.refresh(query)
-        warm_and_release_connection(query, "database")
-        with event_logger.log_context(
-            action="execute_sql",
-            database=database,
-            object_ref=__name__,
-        ):
-            stats_logger = app.config["STATS_LOGGER"]
-            with stats_timing("sqllab.query.time_executing_query", stats_logger):
-                db_engine_spec.execute_with_cursor(cursor, query.executed_sql, query)
-
-            with stats_timing("sqllab.query.time_fetching_results", stats_logger):
-                logger.debug(
-                    "Query %d: Fetching data for query object: %s",
-                    query.id,
-                    str(query.to_dict()),
+    with (
+        sql_lab_query_context(query),
+        observe_statement(
+            database, cursor, query.executed_sql, statement_index=statement_index
+        ) as observation,
+    ):
+        try:
+            log_query = app.config["QUERY_LOGGER"]
+            if log_query:
+                log_query(
+                    query.database.sqlalchemy_uri,
+                    query.executed_sql,
+                    query.schema,
+                    __name__,
+                    security_manager,
+                    log_params,
                 )
-                increased_limit = None if query.limit is None else query.limit + 1
-                data = db_engine_spec.fetch_data(cursor, increased_limit)
-                if query.limit is None or len(data) <= query.limit:
-                    query.limiting_factor = LimitingFactor.NOT_LIMITED
-                else:
-                    # return 1 row less than increased_query
-                    data = data[:-1]
-    except SoftTimeLimitExceeded as ex:
-        query.status = QueryStatus.TIMED_OUT
+            db.session.commit()
+            # Eagerly reload query attributes so no lazy-load triggers a new
+            # metadata DB connection during the (potentially long) cursor
+            # execution. With NullPool each lazy-load opens a fresh connection
+            # that stays idle for the query duration; if the query runs longer
+            # than the DB's idle_in_transaction_session_timeout the connection
+            # is killed, leaving the query stuck in "running" state forever.
+            db.session.refresh(query)
+            warm_and_release_connection(query, "database")
+            with event_logger.log_context(
+                action="execute_sql",
+                database=database,
+                object_ref=__name__,
+            ):
+                stats_logger = app.config["STATS_LOGGER"]
+                with stats_timing("sqllab.query.time_executing_query", stats_logger):
+                    with observation.execute():
+                        db_engine_spec.execute_with_cursor(
+                            cursor, query.executed_sql, query
+                        )
 
-        logger.warning("Query %d: Time limit exceeded", query.id)
-        logger.debug("Query %d: %s", query.id, ex)
-        raise SupersetErrorException(
-            SupersetError(
-                message=__(
-                    "The query was killed after %(sqllab_timeout)s seconds. It might "
-                    "be too complex, or the database might be under heavy load.",
-                    sqllab_timeout=app.config["SQLLAB_ASYNC_TIME_LIMIT_SEC"],
-                ),
-                error_type=SupersetErrorType.SQLLAB_TIMEOUT_ERROR,
-                level=ErrorLevel.ERROR,
-            )
-        ) from ex
-    except OAuth2RedirectError:
-        # user needs to authenticate with OAuth2 in order to run query
-        raise
-    except Exception as ex:
-        # query is stopped in another thread/worker
-        # stopping raises expected exceptions which we should skip
-        db.session.refresh(query)
-        if query.status == QueryStatus.STOPPED:
-            raise SqlLabQueryStoppedException() from ex
+                with stats_timing("sqllab.query.time_fetching_results", stats_logger):
+                    logger.debug(
+                        "Query %d: Fetching data for query object: %s",
+                        query.id,
+                        str(query.to_dict()),
+                    )
+                    increased_limit = None if query.limit is None else query.limit + 1
+                    with observation.fetch() as fetch_operation:
+                        data = db_engine_spec.fetch_data(cursor, increased_limit)
+                        fetch_operation.set_attribute("rows", len(data))
+                    if query.limit is None or len(data) <= query.limit:
+                        query.limiting_factor = LimitingFactor.NOT_LIMITED
+                    else:
+                        # return 1 row less than increased_query
+                        data = data[:-1]
+        except SoftTimeLimitExceeded as ex:
+            query.status = QueryStatus.TIMED_OUT
 
-        logger.debug("Query %d: %s", query.id, ex)
-        raise SqlLabException(db_engine_spec.extract_error_message(ex)) from ex
+            logger.warning("Query %d: Time limit exceeded", query.id)
+            logger.debug("Query %d: %s", query.id, ex)
+            raise SupersetErrorException(
+                SupersetError(
+                    message=__(
+                        "The query was killed after %(sqllab_timeout)s seconds. "
+                        "It might be too complex, or the database might be under "
+                        "heavy load.",
+                        sqllab_timeout=app.config["SQLLAB_ASYNC_TIME_LIMIT_SEC"],
+                    ),
+                    error_type=SupersetErrorType.SQLLAB_TIMEOUT_ERROR,
+                    level=ErrorLevel.ERROR,
+                )
+            ) from ex
+        except OAuth2RedirectError:
+            # user needs to authenticate with OAuth2 in order to run query
+            raise
+        except Exception as ex:
+            # query is stopped in another thread/worker
+            # stopping raises expected exceptions which we should skip
+            db.session.refresh(query)
+            if query.status == QueryStatus.STOPPED:
+                raise SqlLabQueryStoppedException() from ex
 
-    logger.debug("Query %d: Fetching cursor description", query.id)
-    cursor_description = cursor.description
-    return SupersetResultSet(data, cursor_description, db_engine_spec)
+            logger.debug("Query %d: %s", query.id, ex)
+            raise SqlLabException(db_engine_spec.extract_error_message(ex)) from ex
+
+        logger.debug("Query %d: Fetching cursor description", query.id)
+        cursor_description = cursor.description
+        with operation("sql.resultset"):
+            return SupersetResultSet(data, cursor_description, db_engine_spec)
 
 
 def _serialize_payload(
     payload: dict[Any, Any], use_msgpack: Optional[bool] = False
 ) -> Union[bytes, str]:
     logger.debug("Serializing to msgpack: %r", use_msgpack)
-    if use_msgpack:
-        return msgpack.dumps(payload, default=json.json_iso_dttm_ser, use_bin_type=True)
+    with operation("sql.assembly", phase="payload_serialization"):
+        if use_msgpack:
+            return msgpack.dumps(
+                payload, default=json.json_iso_dttm_ser, use_bin_type=True
+            )
 
-    return json.dumps(payload, default=json.json_iso_dttm_ser, ignore_nan=True)
+        return json.dumps(payload, default=json.json_iso_dttm_ser, ignore_nan=True)
 
 
 def _serialize_and_expand_data(
@@ -410,35 +433,40 @@ def _serialize_and_expand_data(
     expanded_columns: list[Any]
 
     if use_msgpack:
-        if has_app_context():
-            stats_logger = app.config["STATS_LOGGER"]
-            with stats_timing(
-                "sqllab.query.results_backend_pa_serialization", stats_logger
-            ):
+        with operation("sql.assembly", phase="arrow_serialization"):
+            if has_app_context():
+                stats_logger = app.config["STATS_LOGGER"]
+                with stats_timing(
+                    "sqllab.query.results_backend_pa_serialization", stats_logger
+                ):
+                    data = write_ipc_buffer(result_set.pa_table).to_pybytes()
+            else:
+                # No app context, skip stats timing
                 data = write_ipc_buffer(result_set.pa_table).to_pybytes()
-        else:
-            # No app context, skip stats timing
-            data = write_ipc_buffer(result_set.pa_table).to_pybytes()
 
         # expand when loading data from results backend
         all_columns, expanded_columns = (selected_columns, [])
     else:
-        df = result_set.to_pandas_df()
-        data = df_to_records(df) or []
+        with operation("sql.dataframe") as dataframe_operation:
+            df = result_set.to_pandas_df()
+            if is_enabled():
+                for key, value in dataframe_attributes(df).items():
+                    dataframe_operation.set_attribute(key, value)
+        with operation("sql.assembly", phase="records"):
+            data = df_to_records(df) or []
 
-        if expand_data:
-            all_columns, data, expanded_columns = db_engine_spec.expand_data(
-                selected_columns, data
-            )
-        else:
-            all_columns = selected_columns
-            expanded_columns = []
+            if expand_data:
+                all_columns, data, expanded_columns = db_engine_spec.expand_data(
+                    selected_columns, data
+                )
+            else:
+                all_columns = selected_columns
+                expanded_columns = []
 
     return (data, selected_columns, all_columns, expanded_columns)
 
 
-def execute_sql_statements(  # noqa: C901
-    # pylint: disable=too-many-arguments, too-many-locals, too-many-statements, too-many-branches
+def execute_sql_statements(  # pylint: disable=too-many-arguments
     query_id: int,
     rendered_query: str,
     return_results: bool,
@@ -447,13 +475,36 @@ def execute_sql_statements(  # noqa: C901
     expand_data: bool,
     log_params: Optional[dict[str, Any]],
 ) -> Optional[dict[str, Any]]:
-    """Executes the sql query returns the results."""
+    """Execute SQL Lab with safe identity across planning, SQL, and result storage."""
     if store_results and start_time:
         # only asynchronous queries
         stats_logger = app.config["STATS_LOGGER"]
         stats_logger.timing("sqllab.query.time_pending", now_as_float() - start_time)
 
     query = get_query(query_id=query_id)
+    with sql_lab_query_context(query):
+        return _execute_sql_statements(
+            query,
+            query_id,
+            rendered_query,
+            return_results,
+            store_results,
+            expand_data,
+            log_params,
+        )
+
+
+def _execute_sql_statements(  # noqa: C901
+    # pylint: disable=too-many-arguments, too-many-locals, too-many-statements, too-many-branches
+    query: Query,
+    query_id: int,
+    rendered_query: str,
+    return_results: bool,
+    store_results: bool,
+    expand_data: bool,
+    log_params: Optional[dict[str, Any]],
+) -> Optional[dict[str, Any]]:
+    """Run the existing SQL Lab state machine inside its query identity scope."""
     payload: dict[str, Any] = {"query_id": query_id}
 
     # A stop request may have landed before this worker even started (e.g.
@@ -482,7 +533,8 @@ def execute_sql_statements(  # noqa: C901
     query.start_running_time = now_as_float()
     db.session.commit()
 
-    parsed_script = SQLScript(rendered_query, engine=db_engine_spec.engine)
+    with operation("sql.planning", phase="parse"):
+        parsed_script = SQLScript(rendered_query, engine=db_engine_spec.engine)
 
     disallowed_functions = app.config["DISALLOWED_SQL_FUNCTIONS"].get(
         db_engine_spec.engine,
@@ -557,9 +609,10 @@ def execute_sql_statements(  # noqa: C901
     # `MUTATE_AFTER_SPLIT` (shared with the async path in `celery_task` so the
     # `run_multiple_statements_as_one` × `MUTATE_AFTER_SPLIT` matrix behaves
     # identically in both).
-    parsed_script, blocks = build_statement_blocks(
-        parsed_script, db_engine_spec, database
-    )
+    with operation("sql.planning", phase="statement_blocks"):
+        parsed_script, blocks = build_statement_blocks(
+            parsed_script, db_engine_spec, database
+        )
 
     with database.get_raw_connection(
         catalog=query.catalog,
@@ -603,13 +656,14 @@ def execute_sql_statements(  # noqa: C901
             # the engine runs everything as one block the SQL is not split, otherwise
             # each block is a single split-out statement. This lets `MUTATE_AFTER_SPLIT`
             # decide correctly whether the mutator fires here.
-            query.executed_sql = database.mutate_sql_based_on_config(
-                block,
-                is_split=not db_engine_spec.run_multiple_statements_as_one,
-            )
+            with operation("sql.planning", phase="mutation", statement_index=i):
+                query.executed_sql = database.mutate_sql_based_on_config(
+                    block,
+                    is_split=not db_engine_spec.run_multiple_statements_as_one,
+                )
 
             try:
-                result_set = execute_query(query, cursor, log_params)
+                result_set = execute_query(query, cursor, log_params, statement_index=i)
             except SqlLabQueryStoppedException:
                 payload.update({"status": QueryStatus.STOPPED})
                 return payload
@@ -686,17 +740,18 @@ def execute_sql_statements(  # noqa: C901
     )
 
     # TODO: data should be saved separately from metadata (likely in Parquet)
-    payload.update(
-        {
-            "status": QueryStatus.SUCCESS,
-            "data": data,
-            "columns": all_columns,
-            "selected_columns": selected_columns,
-            "expanded_columns": expanded_columns,
-            "query": query.to_dict(),
-        }
-    )
-    payload["query"]["state"] = QueryStatus.SUCCESS
+    with operation("sql.assembly", phase="payload"):
+        payload.update(
+            {
+                "status": QueryStatus.SUCCESS,
+                "data": data,
+                "columns": all_columns,
+                "selected_columns": selected_columns,
+                "expanded_columns": expanded_columns,
+                "query": query.to_dict(),
+            }
+        )
+        payload["query"]["state"] = QueryStatus.SUCCESS
 
     if store_results and results_backend:
         key = str(uuid.uuid4())
@@ -732,14 +787,21 @@ def execute_sql_statements(  # noqa: C901
             if cache_timeout is None:
                 cache_timeout = app.config["CACHE_DEFAULT_TIMEOUT"]
 
-            compressed = zlib_compress(serialized_payload)
+            with operation("sql.assembly", phase="compression"):
+                compressed = zlib_compress(serialized_payload)
             logger.debug(
                 "*** serialized payload size: %i", getsizeof(serialized_payload)
             )
             logger.debug("*** compressed payload size: %i", getsizeof(compressed))
 
             # Store results in backend and check if write succeeded
-            write_success = results_backend.set(key, compressed, cache_timeout)
+            with operation("cache.write", cache_backend="results") as cache_operation:
+                write_success = bool(
+                    results_backend.set(key, compressed, cache_timeout)
+                )
+                cache_operation.set_attribute("result_bytes", len(compressed))
+                if not write_success:
+                    cache_operation.set_attribute("outcome", "not_persisted")
             if not write_success:
                 # Backend write failed - log error and don't set results_key
                 logger.error(

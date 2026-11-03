@@ -15,13 +15,55 @@
 # specific language governing permissions and limitations
 # under the License.
 import abc
+import json  # noqa: TID251 - logging bootstraps before application serialization
 import logging
+from datetime import datetime, timezone
 from logging.handlers import TimedRotatingFileHandler
 
 import flask.app
 import flask.config
 
 logger = logging.getLogger(__name__)
+
+
+class JsonLogFormatter(logging.Formatter):
+    """Keep each formatted message and its full traceback in one physical line."""
+
+    def __init__(self, formatter: logging.Formatter | None = None) -> None:
+        super().__init__()
+        self.formatter = formatter or logging.Formatter("%(message)s")
+
+    def format(self, record: logging.LogRecord) -> str:
+        message = self.formatter.format(record)
+        metadata = {
+            "logger": record.name,
+            "process_id": record.process,
+            "process_name": record.processName,
+            "thread_name": record.threadName,
+        }
+        for key in ("task_id", "task_name"):
+            if isinstance(value := record.__dict__.get(key), str):
+                metadata[key] = value
+        return json.dumps(
+            {
+                "time": datetime.fromtimestamp(record.created, timezone.utc)
+                .isoformat(timespec="milliseconds")
+                .replace("+00:00", "Z"),
+                "levelLabel": record.levelname,
+                "message": message,
+                "metadata": metadata,
+            },
+            separators=(",", ":"),
+        )
+
+
+def configure_json_logging(logger: logging.Logger) -> None:
+    """Preserve handler destinations, levels and filters; only change framing."""
+    for handler in logger.handlers:
+        if isinstance(handler, logging.StreamHandler) and not isinstance(
+            handler.formatter, JsonLogFormatter
+        ):
+            handler.setFormatter(JsonLogFormatter(handler.formatter))
 
 
 class LoggingConfigurator(abc.ABC):  # pylint: disable=too-few-public-methods
@@ -38,8 +80,9 @@ class DefaultLoggingConfigurator(  # pylint: disable=too-few-public-methods
     def configure_logging(
         self, app_config: flask.config.Config, debug_mode: bool
     ) -> None:
-        if app_config["SILENCE_FAB"]:
-            logging.getLogger("flask_appbuilder").setLevel(logging.ERROR)
+        logging.getLogger("flask_appbuilder").setLevel(
+            logging.ERROR if app_config["SILENCE_FAB"] else logging.NOTSET
+        )
 
         # basicConfig() will set up a default StreamHandler on stderr
         logging.basicConfig(format=app_config["LOG_FORMAT"])
@@ -61,5 +104,8 @@ class DefaultLoggingConfigurator(  # pylint: disable=too-few-public-methods
                 backupCount=app_config["BACKUP_COUNT"],
             )
             logging.getLogger().addHandler(handler)
+
+        if app_config.get("LOG_FORMAT_JSON"):
+            configure_json_logging(logging.getLogger())
 
         logger.debug("logging was configured successfully")

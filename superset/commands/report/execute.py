@@ -20,6 +20,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Sequence
 from contextlib import closing
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, TYPE_CHECKING, Union
 from urllib.error import URLError
@@ -71,6 +72,19 @@ from superset.dashboards.permalink.types import DashboardPermalinkState
 from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
 from superset.exceptions import SupersetErrorsException, SupersetException
 from superset.extensions import feature_flag_manager, machine_auth_provider_factory
+from superset.observability import (
+    emit_event,
+    increment,
+    is_enabled,
+    operation,
+    telemetry_context,
+)
+from superset.observability.lifecycle import (
+    ExecutionContextRedirectHandler,
+    observed,
+    set_task_outcome,
+    sign_execution_request,
+)
 from superset.reports.models import (
     ReportDataFormat,
     ReportExecutionLog,
@@ -115,6 +129,9 @@ if TYPE_CHECKING:
     from flask_appbuilder.security.sqla.models import User
 
 logger = logging.getLogger(__name__)
+_report_outcome: ContextVar[str | None] = ContextVar(
+    "report_observation_outcome", default=None
+)
 
 
 def resolve_executor_user(model: ReportSchedule) -> tuple["User", str]:
@@ -385,6 +402,24 @@ class BaseReportState:
             error_message,
             include_execution_warnings=include_execution_warnings,
         )
+        outcome = {
+            ReportState.SUCCESS: "success",
+            ReportState.ERROR: "error",
+            ReportState.RETRYING: "retry",
+            ReportState.NOOP: "skipped",
+            ReportState.GRACE: "skipped",
+            ReportState.WORKING: "running",
+        }.get(state, "unknown")
+        emit_event(
+            "report.state",
+            report_schedule_id=self._report_schedule.id,
+            report_execution_id=str(self._execution_id),
+            outcome=outcome,
+        )
+        if state != ReportState.WORKING:
+            _report_outcome.set(outcome)
+            set_task_outcome(outcome)
+            increment("report.transitions", outcome=outcome)
         if state != ReportState.WORKING:
             elapsed, remaining = self._budget_values()
             logger.info(
@@ -779,6 +814,7 @@ class BaseReportState:
             for tab_anchor in tab_anchors
         ]
 
+    @observed("report.capture", phase="capture")
     def _get_screenshots(self) -> list[bytes]:
         """
         Get chart or dashboard screenshots
@@ -896,6 +932,7 @@ class BaseReportState:
             raise ReportScheduleScreenshotFailedError()
         return imges
 
+    @observed("report.export", phase="pdf")
     def _get_pdf(self) -> bytes:
         """
         Get chart or dashboard pdf
@@ -1013,14 +1050,18 @@ class BaseReportState:
             },
             method="POST",
         )
-        with closing(
-            urllib.request.build_opener().open(request, timeout=timeout)  # noqa: S310
-        ) as response:
+        if is_enabled():
+            sign_execution_request(request)
+            opener = urllib.request.build_opener(ExecutionContextRedirectHandler())
+        else:
+            opener = urllib.request.build_opener()
+        with closing(opener.open(request, timeout=timeout)) as response:  # noqa: S310
             content = response.read()
             if response.getcode() != 200:
                 raise URLError(response.getcode())
         return content or None
 
+    @observed("report.export", phase="tabular")
     def _get_data(self, result_format: ChartDataResultFormat) -> bytes:  # noqa: C901
         """
         Fetch tabular chart data (CSV or Excel) as raw bytes.
@@ -1147,6 +1188,7 @@ class BaseReportState:
             raise failed_error()
         return data
 
+    @observed("report.export", phase="dataframe")
     def _get_embedded_data(self) -> pd.DataFrame:
         """
         Return data as a Pandas dataframe, to embed in notifications as a table.
@@ -1280,7 +1322,6 @@ class BaseReportState:
         extra = self._report_schedule.extra
         return extra.get("email_from") if extra else None
 
-
     def _get_notification_content(self) -> NotificationContent:  # noqa: C901
         """
         Gets a notification content, this is composed by a title and a screenshot
@@ -1374,6 +1415,7 @@ class BaseReportState:
             email_from=self._get_email_from(),
         )
 
+    @observed("report.notification", phase="notification_delivery")
     def _send_notification(
         self,
         notification_content: NotificationContent,
@@ -1389,6 +1431,11 @@ class BaseReportState:
                 "set it to False to send notifications.",
                 self._report_schedule.name,
                 recipient.recipient_config_json,
+            )
+            emit_event(
+                "report.notification.skipped",
+                outcome="skipped",
+                phase="notification_delivery",
             )
             return
 
@@ -1436,6 +1483,7 @@ class BaseReportState:
             "did not produce an accepted artifact"
         )
 
+    @observed("report.delivery", phase="notification_delivery")
     def _send(
         self,
         notification_content: NotificationContent,
@@ -1628,10 +1676,23 @@ class BaseReportState:
         # Pass the original crontab-trigger timestamp so the retry task
         # shares the same window identity.  This lets _is_retry_window_stale()
         # detect when a *new* crontab window fires while retries are in-flight.
-        execute_task.apply_async(
-            (self._report_schedule.id, self._scheduled_dttm.isoformat()),
-            countdown=delay_seconds,
+        with telemetry_context(
+            source="report",
+            report_schedule_id=self._report_schedule.id,
+            retry_count=self._report_schedule.retry_attempt,
+        ):
+            execute_task.apply_async(
+                (self._report_schedule.id, self._scheduled_dttm.isoformat()),
+                countdown=delay_seconds,
+            )
+        emit_event(
+            "report.retry.scheduled",
+            report_schedule_id=self._report_schedule.id,
+            report_execution_id=str(self._execution_id),
+            retry_count=self._report_schedule.retry_attempt,
+            outcome="retry",
         )
+        increment("report.retries", outcome="retry")
 
     def send_retry_notification(
         self, attempt: int, max_attempts: int, error_message: str
@@ -2198,6 +2259,25 @@ class AsyncExecuteReportScheduleCommand(BaseCommand):
         self._execution_id = UUID(task_id)
 
     def run(self) -> None:
+        with (
+            telemetry_context(
+                source="report",
+                report_schedule_id=self._model_id,
+                report_execution_id=str(self._execution_id),
+            ),
+            operation("report.execute") as observation,
+        ):
+            token = _report_outcome.set(None)
+            try:
+                self._run()
+                # Never reload an expired ORM schedule just to observe its state.
+                outcome = _report_outcome.get() or "skipped"
+                observation.set_attribute("outcome", outcome)
+                set_task_outcome(outcome)
+            finally:
+                _report_outcome.reset(token)
+
+    def _run(self) -> None:
         monotonic_started_at = time.monotonic()
         report_execution_context: ReportExecutionContext | None = None
         owns_report_working_state = False
@@ -2277,7 +2357,14 @@ class AsyncExecuteReportScheduleCommand(BaseCommand):
             user = security_manager.find_user(username)
 
             start_time: datetime = datetime.now(timezone.utc).replace(tzinfo=None)
-            with override_user(user):
+            with (
+                telemetry_context(
+                    effective_user_id=user.id if user else None,
+                    chart_id=self._model.chart_id,
+                    dashboard_id=self._model.dashboard_id,
+                ),
+                override_user(user),
+            ):
                 # Pre-commit any permalink rows before the state machine's
                 # @transaction() opens. When called inside a transaction,
                 # CreateDashboardPermalinkCommand only flushes (not commits),

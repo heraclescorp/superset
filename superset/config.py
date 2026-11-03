@@ -86,6 +86,31 @@ if TYPE_CHECKING:
 # Realtime stats logger, a StatsD implementation exists
 STATS_LOGGER = DummyStatsLogger()
 
+# Native cumulative OTLP metrics/traces and payload-free JSON events. Disabled
+# by default; standalone warehouse CLI reads SUPERSET_OBSERVABILITY_ENABLED.
+# OTEL_EXPORTER_OTLP_ENDPOINT (grpc, port4317), OTEL_SERVICE_NAME and safe
+# OTEL_RESOURCE_ATTRIBUTES supply identity. No network/exporter starts during
+# Flask preload; each web/worker/beat PID owns a unique service.instance.id.
+# User/query IDs belong only in events/spans; database/warehouse asset labels
+# have bounded cardinality. Collector outages never alter business behavior.
+# Internal report/warmup context uses purpose-signed SECRET_KEY tokens sent only
+# to the exact WEBDRIVER_BASEURL origin, never guest tokens or task arguments.
+OBSERVABILITY_ENABLED = False
+OBSERVABILITY_METRIC_EXPORT_INTERVAL_SECONDS = 15
+OBSERVABILITY_EXPORT_TIMEOUT_SECONDS = 2
+# Keep full bounded first-party coverage in the single app rollout; select or
+# sample downstream in Collector. Incoming unsampled parents cannot disable it.
+# Lowering this producer ratio is an explicit loss of upstream trace coverage;
+# changing it later requires restarting the application. Events remain unsampled.
+OBSERVABILITY_TRACE_SAMPLE_RATIO = 1.0
+OBSERVABILITY_MAX_QUEUE_SIZE = 2048
+# Event stdout I/O is isolated from business/OTLP threads. Queue overflow and
+# write errors are counted separately; shutdown never waits on a full pipe.
+OBSERVABILITY_EVENT_MAX_QUEUE_SIZE = 2048
+OBSERVABILITY_EVENT_SHUTDOWN_TIMEOUT_SECONDS = 0.25
+# Scope in-flight metrics are live-PID diagnostics, not global task backlog.
+# Select live service.instance.id writers; authoritative state uses snapshots.
+
 # By default will log events to the metadata database with `DBEventLogger`
 # Note that you can use `StdOutEventLogger` for debugging
 # Note that you can write your own event logger by extending `AbstractEventLogger`
@@ -1640,6 +1665,8 @@ LOGGING_CONFIGURATOR = DefaultLoggingConfigurator()
 # Console Log Settings
 
 LOG_FORMAT = "%(asctime)s:%(levelname)s:%(name)s:%(message)s"
+# Escape message/traceback newlines so container logs retain one record per call.
+LOG_FORMAT_JSON = os.environ.get("SUPERSET_LOG_FORMAT", "").lower() == "json"
 LOG_LEVEL = logging.DEBUG if DEBUG else logging.INFO
 
 # ---------------------------------------------------
@@ -1806,6 +1833,7 @@ class CeleryConfig:  # pylint: disable=too-few-public-methods
         "superset.tasks.slack",
         "superset.tasks.export_dashboard_excel",
         "superset.tasks.version_history_retention",
+        "superset.observability.snapshot",
     )
     result_backend = "db+sqlite:///celery_results.sqlite"
     worker_prefetch_multiplier = 1
@@ -1816,6 +1844,14 @@ class CeleryConfig:  # pylint: disable=too-few-public-methods
         },
     }
     beat_schedule = {
+        # Concurrent control children share a per-interval coordination lease.
+        # Select availability by latest phase attempt (including interrupted);
+        # select gauges by latest complete success. Never sum PID snapshots.
+        "observability.snapshot": {
+            "task": "observability.snapshot",
+            "schedule": 30.0,
+            "options": {"expires": 25},
+        },
         "reports.scheduler": {
             "task": "reports.scheduler",
             "schedule": crontab(minute="*", hour="*"),

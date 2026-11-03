@@ -79,9 +79,8 @@ RUN --mount=type=bind,from=ldap-wheel,source=/wheels,target=/wheels \
     --mount=type=cache,target=/app/superset_home/.cache/uv \
     uv pip install --no-index --find-links=/wheels python-ldap==3.4.4 && \
     uv pip install -r requirements/base.txt \
-      -e ".[postgres,clickhouse,snowflake,gsheets,gsheets-export]" \
-      snowflake-sqlalchemy==1.11.1 snowflake-connector-python==4.8.0 \
-      opentelemetry-api==1.29.0 opentelemetry-sdk==1.29.0 && \
+      -e ".[postgres,clickhouse,snowflake,gsheets,gsheets-export,aws-runtime-secrets]" \
+      snowflake-sqlalchemy==1.11.1 snowflake-connector-python==4.8.0 && \
     find superset/translations -name '*.po' -delete && \
     python -m compileall /app/superset
 

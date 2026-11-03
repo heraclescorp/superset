@@ -50,6 +50,10 @@ import { logging } from '@apache-superset/core/utils';
 import { t } from '@apache-superset/core/translation';
 import { useTheme } from '@apache-superset/core/theme';
 import { Logger, LOG_ACTIONS_RENDER_CHART } from 'src/logger/LogUtils';
+import {
+  chartRenderStarted,
+  chartRenderFinished,
+} from 'src/logger/browserPerformance';
 import { EmptyState } from '@superset-ui/core/components';
 import { ChartSource } from 'src/types/ChartSource';
 import type { Datasource, ChartStatus } from 'src/explore/types';
@@ -291,6 +295,7 @@ function ChartRendererComponent({
   );
 
   const handleRenderSuccess = useCallback((): void => {
+    chartRenderFinished(queriesResponse);
     if (['loading', 'rendered'].indexOf(chartStatus as string) < 0) {
       actions.chartRenderingSucceeded(chartId);
     }
@@ -305,10 +310,11 @@ function ChartRendererComponent({
         duration: Logger.getTimestamp() - renderStartTimeRef.current,
       });
     }
-  }, [actions, chartId, chartStatus, propVizType]);
+  }, [actions, chartId, chartStatus, propVizType, queriesResponse]);
 
   const handleRenderFailure = useCallback(
     (error: Error, info: { componentStack: string } | null): void => {
+      chartRenderFinished(queriesResponse, true);
       logging.warn(error);
       actions.chartRenderingFailed(
         error.toString(),
@@ -328,7 +334,7 @@ function ChartRendererComponent({
         });
       }
     },
-    [actions, chartId],
+    [actions, chartId, queriesResponse],
   );
 
   const handleSetControlValue = useCallback(
@@ -444,6 +450,7 @@ function ChartRendererComponent({
   }
 
   renderStartTimeRef.current = Logger.getTimestamp();
+  if (resultsReady) chartRenderStarted(queriesResponse);
 
   const currentFormData =
     chartIsStale && latestQueryFormData ? latestQueryFormData : formData;

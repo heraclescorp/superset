@@ -27,6 +27,8 @@ from typing import Any, TYPE_CHECKING
 from flask import current_app as app
 
 from superset.extensions import machine_auth_provider_factory
+from superset.observability import get_context, is_enabled
+from superset.observability.lifecycle import execution_headers_for_url, observed
 from superset.utils.report_execution import (
     ReportExecutionContext,
 )
@@ -850,6 +852,7 @@ class WebDriverPlaywright(WebDriverProxy):
             context_suffix,
         )
 
+    @observed("screenshot.capture", phase="browser")
     def get_screenshot(  # pylint: disable=too-many-locals, too-many-statements  # noqa: C901
         self,
         url: str,
@@ -902,6 +905,24 @@ class WebDriverPlaywright(WebDriverProxy):
             },
             device_scale_factor=pixel_density,
         )
+
+        def execution_route(route: Any) -> None:
+            # Playwright continue_(headers=...) carries headers across redirects.
+            # Fetch just this hop instead; fulfill lets Chromium follow the next
+            # hop through this origin check again, including cross-origin hops.
+            headers = execution_headers_for_url(route.request.url)
+            if headers:
+                response = route.fetch(
+                    headers={**route.request.headers, **headers},
+                    max_redirects=0,
+                    timeout=app.config["SCREENSHOT_PLAYWRIGHT_DEFAULT_TIMEOUT"],
+                )
+                route.fulfill(response=response)
+            else:
+                route.continue_()
+
+        if is_enabled() and get_context().get("source") in {"report", "warmup"}:
+            context.route("**/*", execution_route)
         context.set_default_timeout(app.config["SCREENSHOT_PLAYWRIGHT_DEFAULT_TIMEOUT"])
         if user:
             self.auth(user, context)

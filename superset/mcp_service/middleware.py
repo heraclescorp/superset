@@ -77,6 +77,7 @@ from superset.mcp_service.utils.response_size_utils import (
     truncate_string_field_response,
 )
 from superset.mcp_service.utils.validation import validation_message
+from superset.observability import register_mcp_tools
 from superset.utils.core import get_user_id
 
 logger = logging.getLogger(__name__)
@@ -821,6 +822,7 @@ class LoggingMiddleware(Middleware):
             # treat as unregistered.
             registered = None
         if registered is not None:
+            register_mcp_tools((candidate,))
             return candidate
         return "call_tool" if mcp_tool else "unknown"
 

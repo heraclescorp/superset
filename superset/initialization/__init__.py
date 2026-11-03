@@ -75,6 +75,7 @@ from superset.extensions import (
     talisman,
 )
 from superset.extensions.context import extension_context
+from superset.observability import initialize as initialize_observability
 from superset.openapi import SupersetOpenApi, SupersetSwaggerView
 from superset.security import SupersetSecurityManager
 from superset.semantic_layers.labels import database_connections_menu_label
@@ -1368,6 +1369,7 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
         # initialised by the time we get here.
         self.setup_soft_delete_listener()
         self.post_init()
+        initialize_observability(self.superset_app)
 
     def set_db_default_isolation(self) -> None:
         # This block sets the default isolation level for mysql to READ COMMITTED if not

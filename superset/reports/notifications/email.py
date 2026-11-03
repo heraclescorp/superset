@@ -36,7 +36,7 @@ from superset.reports.notifications.base import BaseNotification, NotificationCo
 from superset.reports.notifications.exceptions import NotificationError
 from superset.utils import json
 from superset.utils.core import HeaderDataType, send_email_smtp
-from superset.utils.decorators import statsd_gauge
+from superset.utils.decorators import statsd_counter
 from superset.utils.link_redirect import process_html_links
 
 logger = logging.getLogger(__name__)
@@ -46,14 +46,14 @@ def replace_date_placeholders(text: str) -> str:
     """
     Replace date placeholders in text with current date.
     Supports user-friendly date format patterns within curly braces.
-    
+
     Examples:
     - {yyyyMMdd} -> 20240912
     - {yyyy-MM-dd} -> 2024-09-12
     - {yyMMdd} -> 240912
     - {yyyyMMdd_HHmmss} -> 20240912_143045
     - {yyyy/MM/dd} -> 2024/09/12
-    
+
     Format codes:
     - yyyy = 4-digit year, yy = 2-digit year
     - MM = 2-digit month, M = 1-digit month
@@ -63,34 +63,38 @@ def replace_date_placeholders(text: str) -> str:
     """
     if not text:
         return text
-    
+
     now = datetime.now()
-    
+
     # Convert user-friendly format to Python strftime format
     def convert_format(user_format):
         # Replace common user-friendly patterns with Python strftime codes
         # Use a more robust approach to avoid double replacements
         replacements = [
-            ('yyyy', '%Y'),  # 4-digit year
-            ('yy', '%y'),    # 2-digit year
-            ('MM', '%m'),    # 2-digit month
-            ('dd', '%d'),    # 2-digit day
-            ('HH', '%H'),    # 24-hour format
-            ('hh', '%I'),    # 12-hour format
-            ('mm', '%M'),    # minutes
-            ('ss', '%S'),    # seconds
+            ("yyyy", "%Y"),  # 4-digit year
+            ("yy", "%y"),  # 2-digit year
+            ("MM", "%m"),  # 2-digit month
+            ("dd", "%d"),  # 2-digit day
+            ("HH", "%H"),  # 24-hour format
+            ("hh", "%I"),  # 12-hour format
+            ("mm", "%M"),  # minutes
+            ("ss", "%S"),  # seconds
         ]
-        
+
         python_format = user_format
         for user_code, python_code in replacements:
             python_format = python_format.replace(user_code, python_code)
-        
+
         # Handle single character patterns after double character patterns
-        python_format = re.sub(r'(?<!%)(?<![a-zA-Z])M(?!%)(?![a-zA-Z])', '%m', python_format)
-        python_format = re.sub(r'(?<!%)(?<![a-zA-Z])d(?!%)(?![a-zA-Z])', '%d', python_format)
-        
+        python_format = re.sub(
+            r"(?<!%)(?<![a-zA-Z])M(?!%)(?![a-zA-Z])", "%m", python_format
+        )
+        python_format = re.sub(
+            r"(?<!%)(?<![a-zA-Z])d(?!%)(?![a-zA-Z])", "%d", python_format
+        )
+
         return python_format
-    
+
     # Find all date format patterns like {yyyyMMdd}, {yyyy-MM-dd}, etc.
     def replace_date_format(match):
         user_format = match.group(1)  # Extract the format string inside braces
@@ -100,10 +104,10 @@ def replace_date_placeholders(text: str) -> str:
         except ValueError:
             # If the format is invalid, return the original placeholder
             return match.group(0)
-    
+
     # Replace patterns like {yyyyMMdd}, {yyyy-MM-dd}, etc.
-    text = re.sub(r'\{([^}]+)\}', replace_date_format, text)
-    
+    text = re.sub(r"\{([^}]+)\}", replace_date_format, text)
+
     return text
 
 
@@ -137,7 +141,8 @@ ALLOWED_ATTRIBUTES = {
 }
 ZIP_LOCAL_FILE_HEADER = b"PK\x03\x04"
 
-INTERNAL_EMAIL_DOMAIN = 'aven.com'
+INTERNAL_EMAIL_DOMAIN = "aven.com"
+
 
 @dataclass
 class EmailContent:
@@ -327,7 +332,7 @@ class EmailNotification(BaseNotification):  # pylint: disable=too-few-public-met
             """
         )
 
-    def _get_content(self) -> EmailContent:
+    def _get_content(self) -> EmailContent:  # noqa: C901
         if self._content.text and self._content.retry_attempt is not None:
             return EmailContent(
                 body=self._retry_error_template(self._content.text),
@@ -377,7 +382,6 @@ class EmailNotification(BaseNotification):  # pylint: disable=too-few-public-met
             html_table = process_html_links(html_table)
         else:
             html_table = ""
-
 
         img_tags = []
         for msgid in images.keys():
@@ -541,7 +545,7 @@ class EmailNotification(BaseNotification):  # pylint: disable=too-few-public-met
         # To accommodate backward compatibility
         return json.loads(self._recipient.recipient_config_json).get("bccTarget", "")
 
-    @statsd_gauge("reports.email.send")
+    @statsd_counter("reports.email.send")
     def send(self) -> None:
         subject = self._get_subject()
         content = self._get_content()

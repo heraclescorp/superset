@@ -61,11 +61,13 @@ import hashlib
 import logging
 import time
 import uuid
+from collections.abc import Iterator
 from datetime import datetime
 from typing import Any, NoReturn, TYPE_CHECKING
 
 from flask import current_app as app, g, has_app_context
 from flask_babel import gettext as __
+from sqlalchemy import inspect
 
 from superset import db
 from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
@@ -78,6 +80,8 @@ from superset.exceptions import (
     SupersetTimeoutException,
 )
 from superset.extensions import cache_manager
+from superset.observability import get_context, is_enabled, operation, telemetry_context
+from superset.observability.sql import dataframe_attributes, observe_statement
 from superset.sql.parse import SQLScript
 from superset.utils import core as utils
 
@@ -186,6 +190,46 @@ def build_statement_blocks(
     return parsed_script, blocks
 
 
+@contextlib.contextmanager
+def sql_lab_query_context(query: Any) -> Iterator[None]:
+    """Bind loaded execution identity without replacing the request actor/source.
+
+    Read SQLAlchemy state, never expired ORM descriptors: telemetry must not open
+    a metastore transaction while the physical query is running. A private Python
+    snapshot preserves newly created identity across commit expiration. Neither
+    that snapshot nor cancellation handles enter functional query serialization.
+    """
+    if not is_enabled():
+        yield
+        return
+    state = inspect(query, raiseerr=False)
+    from sqlalchemy.orm.state import InstanceState
+
+    if isinstance(state, InstanceState):
+        loaded = state.dict
+    else:
+        try:
+            loaded = vars(query)
+        except TypeError:
+            loaded = {}
+    attributes = {
+        **loaded.get("_observability_sql_lab_context", {}),
+        "source": get_context().get("source") or "sql_lab",
+    }
+    for field, attribute in (
+        ("database_id", "database_id"),
+        ("id", "sql_lab_query_id"),
+        ("client_id", "sql_lab_client_id"),
+        ("user_id", "effective_user_id"),
+    ):
+        if field in loaded:
+            attributes[attribute] = loaded[field]
+    if isinstance(state, InstanceState) and state.identity:
+        attributes["sql_lab_query_id"] = state.identity[0]
+    with telemetry_context(**attributes):
+        yield
+
+
 def execute_sql_with_cursor(
     database: Database,
     cursor: Any,
@@ -228,72 +272,71 @@ def execute_sql_with_cursor(
 
     results: list[tuple[str, SupersetResultSet | None, float, int]] = []
 
-    for i, statement in enumerate(statements):
-        # Check if query was stopped (async cancellation)
-        if check_stopped_fn and check_stopped_fn():
-            return results
+    with sql_lab_query_context(query):
+        for i, statement in enumerate(statements):
+            # Check if query was stopped (async cancellation)
+            if check_stopped_fn and check_stopped_fn():
+                return results
 
-        stmt_start_time = time.time()
+            stmt_start_time = time.time()
 
-        # Apply SQL mutation
-        stmt_sql = database.mutate_sql_based_on_config(
-            statement,
-            is_split=is_split,
-        )
-        if not _has_executable_statements(stmt_sql, database.db_engine_spec.engine):
-            # A `SQL_QUERY_MUTATOR` that strips a statement down to nothing
-            # executable (whitespace or comments only) would otherwise be sent
-            # to the database engine as an empty query, surfacing a confusing
-            # engine-specific error instead of a clean one.
-            raise SupersetErrorException(
-                SupersetError(
-                    message=__(
-                        "The SQL query mutator removed all executable "
-                        "statements from this query."
-                    ),
-                    error_type=SupersetErrorType.INVALID_SQL_ERROR,
-                    level=ErrorLevel.ERROR,
+            with operation("sql.planning", statement_index=i):
+                stmt_sql = database.mutate_sql_based_on_config(
+                    statement,
+                    is_split=is_split,
                 )
+                if not _has_executable_statements(
+                    stmt_sql, database.db_engine_spec.engine
+                ):
+                    raise SupersetErrorException(
+                        SupersetError(
+                            message=__(
+                                "The SQL query mutator removed all executable "
+                                "statements from this query."
+                            ),
+                            error_type=SupersetErrorType.INVALID_SQL_ERROR,
+                            level=ErrorLevel.ERROR,
+                        )
+                    )
+
+            if log_query_fn:
+                log_query_fn(stmt_sql, query.schema)
+
+            with observe_statement(
+                database, cursor, stmt_sql, statement_index=i
+            ) as observation:
+                with observation.execute():
+                    if execute_fn:
+                        execute_fn(cursor, stmt_sql)
+                    else:
+                        database.db_engine_spec.execute(cursor, stmt_sql, database)
+
+                stmt_execution_time = (time.time() - stmt_start_time) * 1000
+
+                description = cursor.description
+                if description:
+                    with observation.fetch() as fetch_operation:
+                        rows = database.db_engine_spec.fetch_data(cursor)
+                        fetch_operation.set_attribute("rows", len(rows))
+                    with operation("sql.resultset"):
+                        result_set = SupersetResultSet(
+                            rows,
+                            description,
+                            database.db_engine_spec,
+                        )
+                else:
+                    result_set = None
+
+                rowcount = cursor.rowcount if hasattr(cursor, "rowcount") else 0
+                results.append((stmt_sql, result_set, stmt_execution_time, rowcount))
+
+            progress_pct = int(((i + 1) / total) * 100)
+            query.progress = progress_pct
+            query.set_extra_json_key(
+                "progress",
+                f"Running statement {i + 1} of {total}",
             )
-
-        # Log query
-        if log_query_fn:
-            log_query_fn(stmt_sql, query.schema)
-
-        # Execute - use custom function or default
-        if execute_fn:
-            execute_fn(cursor, stmt_sql)
-        else:
-            database.db_engine_spec.execute(cursor, stmt_sql, database)
-
-        stmt_execution_time = (time.time() - stmt_start_time) * 1000
-
-        # Fetch results from ALL statements
-        description = cursor.description
-        if description:
-            rows = database.db_engine_spec.fetch_data(cursor)
-            result_set = SupersetResultSet(
-                rows,
-                description,
-                database.db_engine_spec,
-            )
-        else:
-            # DML statement - no result set
-            result_set = None
-
-        # Get row count for DML statements
-        rowcount = cursor.rowcount if hasattr(cursor, "rowcount") else 0
-
-        results.append((stmt_sql, result_set, stmt_execution_time, rowcount))
-
-        # Update progress on Query model
-        progress_pct = int(((i + 1) / total) * 100)
-        query.progress = progress_pct
-        query.set_extra_json_key(
-            "progress",
-            f"Running statement {i + 1} of {total}",
-        )
-        db.session.commit()  # pylint: disable=consider-using-transaction
+            db.session.commit()  # pylint: disable=consider-using-transaction
 
     return results
 
@@ -338,17 +381,17 @@ class SQLExecutor:
         start_time = time.time()
 
         try:
-            # 1. Prepare SQL (assembly only, no security checks)
-            original_script, transformed_script, catalog, schema = self._prepare_sql(
-                sql, opts
-            )
-
-            # 2. Security checks on transformed script
-            self._check_security(transformed_script, schema)
-
-            # 3. Get mutation status and format SQL
-            has_mutation = transformed_script.has_mutation()
-            final_sql = transformed_script.format()
+            with operation(
+                "sql.planning",
+                source=get_context().get("source") or "sql_lab",
+                database_id=self.database.id,
+            ):
+                original_script, transformed_script, catalog, schema = (
+                    self._prepare_sql(sql, opts)
+                )
+                self._check_security(transformed_script, schema)
+                has_mutation = transformed_script.has_mutation()
+                final_sql = transformed_script.format()
 
             # DRY RUN: Return transformed SQL without execution
             if opts.dry_run:
@@ -412,16 +455,18 @@ class SQLExecutor:
             query.progress = 100
             db.session.commit()  # pylint: disable=consider-using-transaction
 
-            result = QueryResultType(
-                status=QueryStatus.SUCCESS,
-                statements=statement_results,
-                query_id=query.id,
-                total_execution_time_ms=total_execution_time_ms,
-            )
+            with sql_lab_query_context(query), operation("sql.assembly"):
+                result = QueryResultType(
+                    status=QueryStatus.SUCCESS,
+                    statements=statement_results,
+                    query_id=query.id,
+                    total_execution_time_ms=total_execution_time_ms,
+                )
 
             # Store in cache (if SELECT and caching enabled)
             if not has_mutation:
-                self._store_in_cache(result, final_sql, opts)
+                with sql_lab_query_context(query):
+                    self._store_in_cache(result, final_sql, opts)
 
             return result
 
@@ -462,17 +507,17 @@ class SQLExecutor:
 
         opts: QueryOptionsType = options or QueryOptionsType()
 
-        # 1. Prepare SQL (assembly only, no security checks)
-        original_script, transformed_script, catalog, schema = self._prepare_sql(
-            sql, opts
-        )
-
-        # 2. Security checks on transformed script
-        self._check_security(transformed_script, schema)
-
-        # 3. Get mutation status and format SQL
-        has_mutation = transformed_script.has_mutation()
-        final_sql = transformed_script.format()
+        with operation(
+            "sql.planning",
+            source=get_context().get("source") or "sql_lab",
+            database_id=self.database.id,
+        ):
+            original_script, transformed_script, catalog, schema = self._prepare_sql(
+                sql, opts
+            )
+            self._check_security(transformed_script, schema)
+            has_mutation = transformed_script.has_mutation()
+            final_sql = transformed_script.format()
 
         # DRY RUN: Return transformed SQL as completed async handle
         if opts.dry_run:
@@ -511,7 +556,8 @@ class SQLExecutor:
         )
 
         # 6. Submit to Celery
-        self._submit_query_to_celery(query, final_sql)
+        with sql_lab_query_context(query):
+            self._submit_query_to_celery(query, final_sql)
 
         # 7. Create and return handle with bound methods
         return self._create_async_handle(query.id)
@@ -649,6 +695,20 @@ class SQLExecutor:
         :param query: Query model for progress tracking
         :returns: List of StatementResult objects
         """
+        with sql_lab_query_context(query):
+            return self._execute_statements_in_context(
+                original_script, transformed_script, catalog, schema, query
+            )
+
+    def _execute_statements_in_context(
+        self,
+        original_script: SQLScript,
+        transformed_script: SQLScript,
+        catalog: str | None,
+        schema: str | None,
+        query: Any,
+    ) -> list[StatementResult]:
+        """Keep acquisition, OAuth retries and result conversion in query context."""
         from superset_core.queries.types import StatementResult
 
         # Get original statement strings
@@ -687,30 +747,29 @@ class SQLExecutor:
 
         # Build StatementResult for each executed statement
         # with both original and executed SQL
-        for orig_sql, (exec_sql, result_set, exec_time, rowcount) in zip(
-            original_sqls, execution_results, strict=True
+        for i, (orig_sql, (exec_sql, result_set, exec_time, rowcount)) in enumerate(
+            zip(original_sqls, execution_results, strict=True)
         ):
             if result_set is not None:
-                # SELECT statement
-                df = result_set.to_pandas_df()
+                with operation(
+                    "sql.dataframe", statement_index=i
+                ) as dataframe_operation:
+                    df = result_set.to_pandas_df()
+                    if is_enabled():
+                        for key, value in dataframe_attributes(df).items():
+                            dataframe_operation.set_attribute(key, value)
+            else:
+                df = None
+
+            with operation("sql.assembly", statement_index=i):
                 stmt_result = StatementResult(
                     original_sql=orig_sql,
                     executed_sql=exec_sql,
                     data=df,
-                    row_count=len(df),
+                    row_count=len(df) if df is not None else rowcount,
                     execution_time_ms=exec_time,
                 )
-            else:
-                # DML statement - no data, just row count
-                stmt_result = StatementResult(
-                    original_sql=orig_sql,
-                    executed_sql=exec_sql,
-                    data=None,
-                    row_count=rowcount,
-                    execution_time_ms=exec_time,
-                )
-
-            results_list.append(stmt_result)
+                results_list.append(stmt_result)
 
         return results_list
 
@@ -940,6 +999,12 @@ class SQLExecutor:
             status=status.value,
             limit=opts.limit,
         )
+        if is_enabled():
+            query.__dict__["_observability_sql_lab_context"] = {
+                "database_id": self.database.id,
+                "sql_lab_client_id": client_id,
+                "effective_user_id": user_id,
+            }
         db.session.add(query)
         db.session.commit()  # pylint: disable=consider-using-transaction
 
@@ -963,7 +1028,15 @@ class SQLExecutor:
         if cache_key is None:
             return None
 
-        if (cached := cache_manager.data_cache.get(cache_key)) is not None:
+        with operation(
+            "cache.lookup",
+            cache_backend="data",
+            source=get_context().get("source") or "sql_lab",
+            database_id=self.database.id,
+        ) as cache_operation:
+            cached = cache_manager.data_cache.get(cache_key)
+            cache_operation.set_attribute("cache_hit", cached is not None)
+        if cached is not None:
             # Reconstruct statement results from cached data
             statements = [
                 StatementResult(
@@ -1016,29 +1089,33 @@ class SQLExecutor:
         # deserialize correctly with some backends or pandas versions).
         import pandas as pd
 
-        cached_data = {
-            "statements": [
-                {
-                    "original_sql": stmt.original_sql,
-                    "executed_sql": stmt.executed_sql,
-                    "data": (
-                        stmt.data.to_dict(orient="records")
-                        if isinstance(stmt.data, pd.DataFrame)
-                        else stmt.data
-                    ),
-                    "row_count": stmt.row_count,
-                    "execution_time_ms": stmt.execution_time_ms,
-                }
-                for stmt in result.statements
-            ],
-            "total_execution_time_ms": result.total_execution_time_ms,
-        }
+        with operation("sql.assembly", phase="cache_serialization"):
+            cached_data = {
+                "statements": [
+                    {
+                        "original_sql": stmt.original_sql,
+                        "executed_sql": stmt.executed_sql,
+                        "data": (
+                            stmt.data.to_dict(orient="records")
+                            if isinstance(stmt.data, pd.DataFrame)
+                            else stmt.data
+                        ),
+                        "row_count": stmt.row_count,
+                        "execution_time_ms": stmt.execution_time_ms,
+                    }
+                    for stmt in result.statements
+                ],
+                "total_execution_time_ms": result.total_execution_time_ms,
+            }
 
-        cache_manager.data_cache.set(
-            cache_key,
-            cached_data,
-            timeout=timeout,
-        )
+        with operation("cache.write", cache_backend="data") as cache_operation:
+            write_success = cache_manager.data_cache.set(
+                cache_key,
+                cached_data,
+                timeout=timeout,
+            )
+            if write_success is False:
+                cache_operation.set_attribute("outcome", "not_persisted")
 
     def _connection_carries_user_identity(self) -> bool:
         """

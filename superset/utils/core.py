@@ -117,7 +117,6 @@ if TYPE_CHECKING:
     from superset.explorables.base import ColumnMetadata, Explorable
     from superset.models.core import Database
 
-logging.getLogger("MARKDOWN").setLevel(logging.INFO)
 logger = logging.getLogger(__name__)
 
 EMAIL_ATTACHMENT_SUBTYPES: dict[str, str] = {

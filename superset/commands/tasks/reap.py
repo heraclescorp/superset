@@ -28,6 +28,7 @@ from superset.commands.base import BaseCommand
 from superset.daos.tasks import TaskDAO
 from superset.extensions import celery_app
 from superset.models.tasks import Task
+from superset.observability.lifecycle import task_transition
 from superset.stats_logger import BaseStatsLogger
 from superset.tasks.constants import ACTIVE_STATES
 from superset.tasks.utils import parse_properties
@@ -119,6 +120,13 @@ class ReapOrphanedTasksCommand(BaseCommand):
             return False
 
         db.session.commit()  # pylint: disable=consider-using-transaction
+        task_transition(
+            str(task_uuid),
+            TaskStatus.FAILURE.value,
+            source="system",
+            celery_task_id=framework.get("celery_task_id"),
+            error_type="OrphanedTaskError",
+        )
 
         # We own the terminal transition — the worker is gone (or lost the race),
         # so its Celery job and warehouse query are safe to clean up. The Celery id

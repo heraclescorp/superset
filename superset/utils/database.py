@@ -31,7 +31,6 @@ if TYPE_CHECKING:
 
     from superset.connectors.sqla.models import Database
 
-logging.getLogger("MARKDOWN").setLevel(logging.INFO)
 logger = logging.getLogger(__name__)
 
 

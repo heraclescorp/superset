@@ -17,7 +17,6 @@
 
 from __future__ import annotations
 
-import logging
 import traceback
 from datetime import datetime
 from http.client import HTTPResponse
@@ -51,7 +50,6 @@ if TYPE_CHECKING:
 
 
 logger = get_task_logger(__name__)
-logger.setLevel(logging.INFO)
 
 
 # pylint: disable=too-many-branches

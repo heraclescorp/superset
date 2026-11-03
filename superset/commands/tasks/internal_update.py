@@ -39,6 +39,7 @@ from superset_core.tasks.types import TaskProperties, TaskStatus
 from superset.commands.base import BaseCommand
 from superset.commands.tasks.exceptions import TaskUpdateFailedError
 from superset.daos.tasks import TaskDAO
+from superset.observability.lifecycle import task_transition
 from superset.tasks.manager import TaskManager
 from superset.utils.decorators import on_error, transaction
 
@@ -200,6 +201,7 @@ class InternalStatusTransitionCommand(BaseCommand):
             current_app.config["STATS_LOGGER"].incr(
                 f"gtf.task.transition.{status_value}"
             )
+            task_transition(str(self._task_uuid), status_value)
             TaskManager.publish_entity_change(self._task_uuid)
             # A prerequisite's status is shown on its dependents' rows, so refresh
             # them too (no-op when this task has no dependents).

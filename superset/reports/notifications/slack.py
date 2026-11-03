@@ -42,7 +42,7 @@ from superset.reports.notifications.slack_transport import (
     send_slack_text,
     send_to_slack_channels,
 )
-from superset.utils.decorators import statsd_gauge
+from superset.utils.decorators import statsd_counter
 from superset.utils.slack import (
     get_slack_client,
     NO_SLACK_RECIPIENTS_MESSAGE,
@@ -129,12 +129,12 @@ class SlackNotification(SlackMixin, BaseNotification):  # pylint: disable=too-fe
             # retain their more specific notification classification.
             raise NotificationUnprocessableException(str(ex)) from ex
 
-    @statsd_gauge("reports.slack.send")
+    @statsd_counter("reports.slack.send")
     def send_legacy_text(self) -> None:
         """Send through Slack v1 without repeating the v2 availability probe."""
         self._send_legacy_text()
 
-    @statsd_gauge(
+    @statsd_counter(
         "reports.slack.send",
         ignored_exceptions=(SlackV1NotificationError,),
     )

@@ -16,13 +16,17 @@
 # under the License.
 """Unit tests for the GTF chart-data fan-out orchestrator."""
 
+import re
+from copy import deepcopy
 from decimal import Decimal
-from typing import TYPE_CHECKING
+from types import SimpleNamespace
+from typing import Any, TYPE_CHECKING
 from unittest import mock
 from uuid import uuid4
 
 import pandas as pd
 import pytest
+from flask import Flask, g
 from pytest_mock import MockerFixture
 
 from superset.common.query_serialization import SerializedQuery
@@ -527,3 +531,148 @@ def test_inject_contribution_totals_includes_decimal_metrics(
     totals = query_obj.post_processing[0]["options"]["contribution_totals"]
     assert totals == {"decimal_metric": Decimal("40.0"), "float_metric": 10.0}
     assert "label" not in totals
+
+
+@pytest.mark.parametrize("source", ["chart", "report", "warmup", "export"])
+@pytest.mark.parametrize("force", [False, True])
+@pytest.mark.parametrize("fail", [False, True])
+def test_async_chart_context_crosses_trusted_headers_not_query_identity(
+    mocker: MockerFixture,
+    source: str,
+    force: bool,
+    fail: bool,
+) -> None:
+    """Real lifecycle restoration preserves assets/index and both user identities."""
+    from superset.common.query_serialization import serialize_query
+    from superset.observability import (
+        events,
+        get_context as get_observability_context,
+        lifecycle,
+        runtime,
+        telemetry_context,
+    )
+    from superset.tasks.async_queries import (
+        execute_chart_query,
+        submit_chart_data_query_tasks,
+    )
+
+    mocker.patch.object(runtime, "_CONFIG", {"OBSERVABILITY_ENABLED": True})
+    mocker.patch.object(events, "get_runtime", return_value=None)
+    mocker.patch.object(events, "emit_event")
+    mocker.patch.object(events, "observe_operation")
+    mocker.patch.object(lifecycle, "emit_event")
+    mocker.patch.object(lifecycle, "increment")
+    security = mocker.patch("superset.tasks.async_queries.security_manager")
+    security.get_current_guest_user_if_guest = mock.MagicMock(return_value=None)
+
+    context = _fake_query_context(2)
+    context.form_data = None
+    context.slice_ = None
+    context.datasource.id = 5
+    context.datasource.type = "table"
+    context.datasource.database_id = 6
+    context.result_type = "full"
+    context.result_format = "json"
+    context.force = force
+    context.force_nonce = None
+    context.is_async_execution = False
+    context.custom_cache_timeout = None
+    context.cache_values = {
+        "datasource": {"id": 5, "type": "table"},
+        "queries": [{"columns": ["first"]}, {"columns": ["second"]}],
+    }
+    for query in context.queries:
+        query.row_limit = 10
+    canonical = [deepcopy(serialize_query(context, index)) for index in range(2)]
+    scheduled: list[dict[str, Any]] = []
+
+    def schedule(*args: Any, options: Any) -> Any:
+        task = SimpleNamespace(uuid=uuid4())
+        headers = {"id": str(task.uuid)}
+        lifecycle._before_publish(headers=headers, sender="task.execute")
+        scheduled.append({"args": args, "key": options.task_key, "headers": headers})
+        return task
+
+    mocker.patch.object(execute_chart_query, "schedule", side_effect=schedule)
+    app = Flask(__name__)
+    app.config["GLOBAL_ASYNC_QUERIES_QUERY_TIMEOUT"] = None
+    original = get_observability_context()
+    with app.test_request_context("/api/v1/chart/data"):
+        g.user = SimpleNamespace(id=71)
+        with telemetry_context(
+            source=source,
+            chart_id=111,
+            dashboard_id=222,
+            request_actor_user_id=19,
+            request_id="request-chart",
+        ):
+            submit_chart_data_query_tasks(context, user_id=71)
+    assert get_observability_context() == original
+    assert [call["args"][0] for call in scheduled] == canonical
+    assert [call["key"] for call in scheduled] == ["key-0", "key-1"]
+
+    # The reconstructed functional query intentionally has no chart/dashboard data.
+    worker_context = mocker.MagicMock()
+    worker_context.form_data = None
+    worker_context.slice_ = None
+    worker_context.force = force
+    worker_context.datasource.id = 5
+    worker_context.datasource.type = "table"
+    worker_context.datasource.database_id = 6
+    worker_context.result_format = "json"
+    worker_context.queries = [mocker.MagicMock()]
+    observed: list[dict[str, Any]] = []
+    failure = ValueError("private-driver-error")
+
+    def acquire(query: Any) -> Any:
+        observed.append(get_observability_context())
+        if fail:
+            raise failure
+        return SimpleNamespace(payload={"cache_key": "key-1"})
+
+    worker_context.get_df_payload_result.side_effect = acquire
+    mocker.patch(
+        "superset.tasks.async_queries.load_serialized_query",
+        return_value=worker_context,
+    )
+    mocker.patch(
+        "superset.tasks.async_queries._resolve_user",
+        return_value=SimpleNamespace(id=71),
+    )
+    mocker.patch("superset.tasks.async_queries._capture_query_cancellation")
+    task_context = mocker.MagicMock()
+    mocker.patch("superset.tasks.async_queries.get_context", return_value=task_context)
+    worker_task = SimpleNamespace(
+        name="task.execute",
+        request=SimpleNamespace(headers=scheduled[1]["headers"], retries=0),
+    )
+    with app.app_context():
+        lifecycle._prerun(task=worker_task, task_id="celery-chart")
+        try:
+            if fail:
+                with pytest.raises(ValueError, match=re.escape(str(failure))) as raised:
+                    execute_chart_query.func(canonical[1], user_id=71)
+                assert raised.value is failure
+            else:
+                execute_chart_query.func(canonical[1], user_id=71)
+        finally:
+            lifecycle._postrun(task=worker_task, state="FAILURE" if fail else "SUCCESS")
+    assert get_observability_context() == original
+    assert len(observed) == 1
+    assert observed[0]["source"] == source
+    assert observed[0]["chart_id"] == 111
+    assert observed[0]["dashboard_id"] == 222
+    assert observed[0]["dataset_id"] == 5
+    assert observed[0]["database_id"] == 6
+    assert observed[0]["query_index"] == 1
+    assert observed[0]["force_refresh"] is force
+    assert observed[0]["async_execution"] is True
+    assert observed[0]["request_actor_user_id"] == 19
+    assert observed[0]["effective_user_id"] == 71
+    if fail:
+        task_context.update_task.assert_not_called()
+    else:
+        task_context.update_task.assert_called_once_with(
+            payload={"cache_key": "key-1"},
+            immediate=True,
+        )

@@ -40,7 +40,7 @@ from superset.reports.notifications.slack_channel_resolver import (
     resolve_slack_channel_ids,
 )
 from superset.utils import json
-from superset.utils.decorators import record_statsd_gauge_failure
+from superset.utils.decorators import record_statsd_counter_failure
 from superset.utils.slack import (
     NO_SLACK_RECIPIENTS_MESSAGE,
     parse_slack_recipient_targets,
@@ -160,7 +160,7 @@ class SlackV1UpgradeCoordinator:
     ) -> None:
         """Deliver text through Slack v1 and record the first successful fallback."""
         if content.has_attachments:
-            record_statsd_gauge_failure("reports.slack.send", update_error)
+            record_statsd_counter_failure("reports.slack.send", update_error)
             message = (
                 f"{SLACK_V1_FILE_UPLOAD_MESSAGE} "
                 f"Slack v2 upgrade failed: {update_error}"

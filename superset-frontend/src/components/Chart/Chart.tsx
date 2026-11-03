@@ -37,6 +37,10 @@ import { PLACEHOLDER_DATASOURCE } from 'src/dashboard/constants';
 import { EmptyState, Loading } from '@superset-ui/core/components';
 import { ErrorBoundary } from 'src/components';
 import { Logger, LOG_ACTIONS_RENDER_CHART } from 'src/logger/LogUtils';
+import {
+  abandonChart,
+  chartRenderFinished,
+} from 'src/logger/browserPerformance';
 import { URL_PARAMS } from 'src/constants';
 import { getUrlParam } from 'src/utils/urlUtils';
 import { isCurrentUserBot } from 'src/utils/isBot';
@@ -258,6 +262,7 @@ function Chart({
 
   const handleRenderContainerFailure = useCallback(
     (error: Error, info: ErrorInfo) => {
+      chartRenderFinished(queriesResponse, true);
       logging.warn(error);
       actions.chartRenderingFailed(
         error.toString(),
@@ -274,7 +279,7 @@ function Chart({
         duration: Logger.getTimestamp() - renderStartTimeRef.current,
       });
     },
-    [actions, chartId],
+    [actions, chartId, queriesResponse],
   );
 
   // componentDidMount and componentDidUpdate combined
@@ -283,6 +288,11 @@ function Chart({
       runQuery();
     }
   }, [triggerQuery, runQuery]);
+
+  useEffect(
+    () => () => abandonChart(chartId, dashboardId),
+    [chartId, dashboardId],
+  );
 
   const renderErrorMessage = useCallback(
     (queryResponse: ChartErrorType) => {
