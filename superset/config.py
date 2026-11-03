@@ -1665,6 +1665,8 @@ LOGGING_CONFIGURATOR = DefaultLoggingConfigurator()
 # Console Log Settings
 
 LOG_FORMAT = "%(asctime)s:%(levelname)s:%(name)s:%(message)s"
+# Escape message/traceback newlines so container logs retain one record per call.
+LOG_FORMAT_JSON = os.environ.get("SUPERSET_LOG_FORMAT", "").lower() == "json"
 LOG_LEVEL = logging.DEBUG if DEBUG else logging.INFO
 
 # ---------------------------------------------------

@@ -20,15 +20,19 @@ This is the main entrypoint used by Celery workers. As such,
 it needs to call create_app() in order to initialize things properly
 """
 
+from logging import Logger
 from typing import Any
 
 from celery import Task
 from celery.signals import (
+    after_setup_logger,
+    after_setup_task_logger,
     beat_init,
     task_postrun,
     worker_process_init,
     worker_process_shutdown,
 )
+from celery.utils.log import get_multiprocessing_logger
 from flask import has_app_context
 
 # Superset framework imports
@@ -36,6 +40,7 @@ from superset import create_app
 from superset.extensions import celery_app, db
 from superset.observability import init_process
 from superset.observability.runtime import shutdown as shutdown_observability
+from superset.utils.logging_configurator import configure_json_logging
 
 # Init the Flask app / configure everything
 flask_app = create_app()
@@ -47,6 +52,14 @@ from . import cache, scheduler, version_history_retention
 
 # Export the celery app globally for Celery (as run on the cmd line) to find
 app = celery_app
+
+
+@after_setup_logger.connect
+@after_setup_task_logger.connect
+def configure_worker_json_logging(logger: Logger, **kwargs: Any) -> None:
+    if flask_app.config.get("LOG_FORMAT_JSON"):
+        configure_json_logging(logger)
+        configure_json_logging(get_multiprocessing_logger())
 
 
 @worker_process_init.connect
