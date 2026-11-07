@@ -80,6 +80,7 @@ beforeEach(() => {
 
 afterEach(() => {
   Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+  document.dispatchEvent(new Event('visibilitychange'));
   window.dispatchEvent(new Event('pagehide'));
   performanceSpy.mockRestore();
   jest.useRealTimers();
@@ -148,8 +149,29 @@ test('excludes hidden-tab time from active browser durations', () => {
   const chartLoad = events().find(event => event.event_name === 'chart.load' && event.outcome === 'success');
   expect(chartLoad?.duration_seconds).toBeCloseTo(0.08);
   expect(chartLoad?.active_duration_seconds).toBeCloseTo(0.03);
+  expect(chartLoad?.hidden_duration_seconds).toBeCloseTo(0.05);
+  expect(chartLoad?.backgrounded).toBe(true);
+  expect(chartLoad?.fully_backgrounded).toBe(false);
   const dashboardLoad = events().find(event => event.event_name === 'dashboard.load' && event.outcome === 'success');
   expect(dashboardLoad?.active_duration_seconds).toBeCloseTo(0.03);
+  expect(dashboardLoad?.hidden_duration_seconds).toBeCloseTo(0.05);
+});
+
+test('flags a load that completes entirely in the background', () => {
+  Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+  document.dispatchEvent(new Event('visibilitychange'));
+  const view = openDashboardView(31, [6]);
+  const load = beginChartLoad(6, { chart_id: 6, dashboard_id: 31 }, new AbortController().signal);
+  clock = 50;
+  const data: QueryData[] = [];
+  chartDataReady(load, data);
+  chartRenderFinished(data);
+  closeDashboardView(view);
+  flushBrowserEvents();
+  const chartLoad = events().find(event => event.event_name === 'chart.load' && event.outcome === 'success');
+  expect(chartLoad?.active_duration_seconds).toBe(0);
+  expect(chartLoad?.hidden_duration_seconds).toBeCloseTo(0.05);
+  expect(chartLoad?.fully_backgrounded).toBe(true);
 });
 
 test('superseded results and abort callbacks cannot complete the replacement load', () => {

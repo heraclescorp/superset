@@ -47,6 +47,9 @@ export interface BrowserEvent extends Assets {
   outcome: Outcome;
   duration_seconds: number;
   active_duration_seconds?: number;
+  hidden_duration_seconds?: number;
+  backgrounded?: boolean;
+  fully_backgrounded?: boolean;
   request_id?: string;
   expected_charts?: number;
   completed_charts?: number;
@@ -172,14 +175,20 @@ function emit(event: Omit<BrowserEvent, 'browser_event_id'>): void {
 }
 
 function emitDashboard(view: DashboardView, outcome: Outcome): void {
+  const wallSeconds = Math.max(0, performance.now() - view.started) / 1000;
+  const active = activeSeconds(view.started, view.hiddenAtStart);
+  const hidden = Math.max(0, wallSeconds - active);
   emit({
     event_name: 'dashboard.load',
     browser_view_id: view.id,
     dashboard_id: view.dashboardId,
     phase: 'load',
     outcome,
-    duration_seconds: Math.max(0, performance.now() - view.started) / 1000,
-    active_duration_seconds: activeSeconds(view.started, view.hiddenAtStart),
+    duration_seconds: wallSeconds,
+    active_duration_seconds: active,
+    hidden_duration_seconds: hidden,
+    backgrounded: hidden > 0,
+    fully_backgrounded: active === 0 && wallSeconds > 0,
     expected_charts: view.expected?.size,
     completed_charts: view.completed.size,
   });
@@ -223,6 +232,12 @@ function emitChart(
   started: number,
 ): void {
   const wallSeconds = Math.max(0, performance.now() - started) / 1000;
+  const active =
+    eventName === 'chart.load'
+      ? activeSeconds(started, load.hiddenAtStart)
+      : undefined;
+  const hidden =
+    active === undefined ? undefined : Math.max(0, wallSeconds - active);
   emit({
     ...load.assets,
     event_name: eventName,
@@ -235,9 +250,14 @@ function emitChart(
     async_execution: load.asyncExecution,
     force_refresh: load.forceRefresh,
     duration_seconds: wallSeconds,
-    ...(eventName === 'chart.load'
-      ? { active_duration_seconds: activeSeconds(started, load.hiddenAtStart) }
-      : {}),
+    ...(active === undefined
+      ? {}
+      : {
+          active_duration_seconds: active,
+          hidden_duration_seconds: hidden,
+          backgrounded: (hidden ?? 0) > 0,
+          fully_backgrounded: active === 0 && wallSeconds > 0,
+        }),
   });
 }
 export function finishChartLoad(

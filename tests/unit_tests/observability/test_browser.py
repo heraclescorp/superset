@@ -193,12 +193,24 @@ def test_active_duration_is_allowlisted_and_used_for_metrics(
 ) -> None:
     response = ingress.client.post(
         "/log/?observability=browser",
-        json={"observability_events": [event(active_duration_seconds=0.1)]},
+        json={
+            "observability_events": [
+                event(
+                    active_duration_seconds=0.1,
+                    hidden_duration_seconds=0.15,
+                    backgrounded=True,
+                    fully_backgrounded=False,
+                )
+            ]
+        },
     )
     assert response.status_code == 200
     _, fields = ingress.emitted.call_args
     assert fields["duration_seconds"] == 0.25
     assert fields["active_duration_seconds"] == 0.1
+    assert fields["hidden_duration_seconds"] == 0.15
+    assert fields["backgrounded"] is True
+    assert fields["fully_backgrounded"] is False
     observed_args, _ = ingress.observed.call_args
     assert observed_args == ("browser.chart.load", 0.1)
 
@@ -275,6 +287,14 @@ def test_unauthorized_or_inconsistent_assets_are_silently_dropped(
         {"active_duration_seconds": float("inf")},
         {"active_duration_seconds": True},
         {"active_duration_seconds": 86401},
+        {"hidden_duration_seconds": -1},
+        {"hidden_duration_seconds": float("nan")},
+        {"hidden_duration_seconds": float("inf")},
+        {"hidden_duration_seconds": True},
+        {"hidden_duration_seconds": 86401},
+        {"hidden_duration_seconds": 0.5},
+        {"backgrounded": "true"},
+        {"fully_backgrounded": 1},
         {"chart_id": True},
         {"chart_id": "7"},
         {"phase": ["load"]},

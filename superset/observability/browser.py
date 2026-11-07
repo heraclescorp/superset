@@ -161,6 +161,16 @@ def _parse_event(value: object) -> dict[str, Any] | None:  # noqa: C901
         ):
             return None
         parsed["active_duration_seconds"] = float(active_duration)
+    hidden_duration = value.get("hidden_duration_seconds")
+    if hidden_duration is not None:
+        if (
+            type(hidden_duration) not in (int, float)
+            or not math.isfinite(hidden_duration)
+            or not 0 <= hidden_duration <= MAX_DURATION_SECONDS
+            or hidden_duration > float(duration) + 1e-6
+        ):
+            return None
+        parsed["hidden_duration_seconds"] = float(hidden_duration)
     for key in ("browser_load_id", "request_id"):
         if (identifier := _identifier(value.get(key))) is not None:
             parsed[key] = identifier
@@ -173,7 +183,13 @@ def _parse_event(value: object) -> dict[str, Any] | None:  # noqa: C901
         count = value.get(key)
         if type(count) is int and 0 <= count <= 10000:
             parsed[key] = count
-    for key in ("cache_hit", "async_execution", "force_refresh"):
+    for key in (
+        "cache_hit",
+        "async_execution",
+        "force_refresh",
+        "backgrounded",
+        "fully_backgrounded",
+    ):
         if key in value:
             if type(value[key]) is not bool:
                 return None
