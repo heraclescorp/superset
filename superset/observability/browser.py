@@ -152,6 +152,25 @@ def _parse_event(value: object) -> dict[str, Any] | None:  # noqa: C901
         "outcome": outcome,
         "duration_seconds": float(duration),
     }
+    active_duration = value.get("active_duration_seconds")
+    if active_duration is not None:
+        if (
+            type(active_duration) not in (int, float)
+            or not math.isfinite(active_duration)
+            or not 0 <= active_duration <= MAX_DURATION_SECONDS
+        ):
+            return None
+        parsed["active_duration_seconds"] = float(active_duration)
+    hidden_duration = value.get("hidden_duration_seconds")
+    if hidden_duration is not None:
+        if (
+            type(hidden_duration) not in (int, float)
+            or not math.isfinite(hidden_duration)
+            or not 0 <= hidden_duration <= MAX_DURATION_SECONDS
+            or hidden_duration > float(duration) + 1e-6
+        ):
+            return None
+        parsed["hidden_duration_seconds"] = float(hidden_duration)
     for key in ("browser_load_id", "request_id"):
         if (identifier := _identifier(value.get(key))) is not None:
             parsed[key] = identifier
@@ -164,7 +183,14 @@ def _parse_event(value: object) -> dict[str, Any] | None:  # noqa: C901
         count = value.get(key)
         if type(count) is int and 0 <= count <= 10000:
             parsed[key] = count
-    for key in ("cache_hit", "async_execution", "force_refresh"):
+    for key in (
+        "cache_hit",
+        "async_execution",
+        "force_refresh",
+        "backgrounded",
+        "fully_backgrounded",
+        "automation",
+    ):
         if key in value:
             if type(value[key]) is not bool:
                 return None
@@ -305,7 +331,10 @@ def ingest_browser_events(events: object) -> None:  # noqa: C901
                         try:
                             observe_duration(
                                 f"browser.{event_name}",
-                                parsed["duration_seconds"],
+                                parsed.get(
+                                    "active_duration_seconds",
+                                    parsed["duration_seconds"],
+                                ),
                                 source="browser",
                                 phase=parsed["phase"],
                                 outcome=parsed["outcome"],
@@ -316,6 +345,7 @@ def ingest_browser_events(events: object) -> None:  # noqa: C901
                                         "cache_hit",
                                         "async_execution",
                                         "force_refresh",
+                                        "automation",
                                     )
                                     if key in parsed
                                 },

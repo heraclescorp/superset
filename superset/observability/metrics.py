@@ -386,7 +386,9 @@ _DIMENSIONS: dict[str, frozenset[str]] = {
     "cache_backend": frozenset({"data", "results"}),
     "trust": frozenset({"client_untrusted", "server"}),
 }
-_BOOL_DIMENSIONS = frozenset({"cache_hit", "async_execution", "force_refresh"})
+_BOOL_DIMENSIONS = frozenset(
+    {"cache_hit", "async_execution", "force_refresh", "automation"}
+)
 
 
 def configure_metric_queues(names: Iterable[str]) -> None:
@@ -650,7 +652,14 @@ def observe_duration(name: str, duration_seconds: float, **attributes: object) -
             key: value
             for key, value in attributes.items()
             if key
-            in {"outcome", "phase", "cache_hit", "async_execution", "force_refresh"}
+            in {
+                "outcome",
+                "phase",
+                "cache_hit",
+                "async_execution",
+                "force_refresh",
+                "automation",
+            }
         }
         safe.update(operation=name, source="browser", trust="client_untrusted")
         _record("counter", "superset_operations_total", 1, safe, inherit_context=False)
