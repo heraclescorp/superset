@@ -120,6 +120,11 @@ _TOKEN_KEYS = frozenset(
         "http_method",
         "status_class",
         "datasource_type",
+        "navigation_type",
+        "route_kind",
+        "viewport_class",
+        "connection_type",
+        "client_version",
     )
 )
 _NUMBER_KEYS = frozenset(

@@ -385,6 +385,12 @@ _DIMENSIONS: dict[str, frozenset[str]] = {
     ),
     "cache_backend": frozenset({"data", "results"}),
     "trust": frozenset({"client_untrusted", "server"}),
+    "navigation_type": frozenset(
+        {"navigate", "reload", "back_forward", "prerender", "unknown"}
+    ),
+    "route_kind": frozenset({"dashboard", "explore", "embedded", "other"}),
+    "viewport_class": frozenset({"small", "medium", "large"}),
+    "connection_type": frozenset({"slow-2g", "2g", "3g", "4g"}),
 }
 _BOOL_DIMENSIONS = frozenset(
     {"cache_hit", "async_execution", "force_refresh", "automation"}
@@ -659,6 +665,10 @@ def observe_duration(name: str, duration_seconds: float, **attributes: object) -
                 "async_execution",
                 "force_refresh",
                 "automation",
+                "navigation_type",
+                "route_kind",
+                "viewport_class",
+                "connection_type",
             }
         }
         safe.update(operation=name, source="browser", trust="client_untrusted")

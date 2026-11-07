@@ -201,6 +201,12 @@ def test_active_duration_is_allowlisted_and_used_for_metrics(
                     backgrounded=True,
                     fully_backgrounded=False,
                     automation=True,
+                    navigation_type="reload",
+                    route_kind="dashboard",
+                    viewport_class="medium",
+                    connection_type="4g",
+                    client_version="7.0.0",
+                    http_status_code=200,
                 )
             ]
         },
@@ -213,9 +219,17 @@ def test_active_duration_is_allowlisted_and_used_for_metrics(
     assert fields["backgrounded"] is True
     assert fields["fully_backgrounded"] is False
     assert fields["automation"] is True
+    assert fields["navigation_type"] == "reload"
+    assert fields["route_kind"] == "dashboard"
+    assert fields["viewport_class"] == "medium"
+    assert fields["connection_type"] == "4g"
+    assert fields["client_version"] == "7.0.0"
+    assert fields["http_status_code"] == 200
     observed_args, observed_kwargs = ingress.observed.call_args
     assert observed_args == ("browser.chart.load", 0.1)
     assert observed_kwargs["automation"] is True
+    assert observed_kwargs["navigation_type"] == "reload"
+    assert observed_kwargs["route_kind"] == "dashboard"
 
 
 def test_guest_form_batches_use_authorized_assets_and_canonical_pseudoprincipal(
@@ -300,6 +314,13 @@ def test_unauthorized_or_inconsistent_assets_are_silently_dropped(
         {"fully_backgrounded": 1},
         {"automation": "true"},
         {"automation": 1},
+        {"navigation_type": "refresh"},
+        {"route_kind": "api"},
+        {"viewport_class": "huge"},
+        {"connection_type": "5g"},
+        {"client_version": "7.0.0;drop"},
+        {"http_status_code": 99},
+        {"http_status_code": "200"},
         {"chart_id": True},
         {"chart_id": "7"},
         {"phase": ["load"]},

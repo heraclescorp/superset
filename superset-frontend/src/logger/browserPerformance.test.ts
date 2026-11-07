@@ -112,7 +112,7 @@ test('separates data, render and end-to-end timings and completes the dashboard 
     'submit-request-id', 'readback-request-id',
   ]);
   expect(observed.find(event => event.event_name === 'chart.request' && event.request_id === 'readback-request-id'))
-    .toMatchObject({ duration_seconds: 0.02 });
+    .toMatchObject({ duration_seconds: 0.02, http_status_code: 200 });
   expect(observed.find(event => event.event_name === 'chart.data_ready')).toMatchObject({ duration_seconds: 0.1 });
   expect(observed.filter(event => event.event_name === 'chart.render')).toEqual([
     expect.objectContaining({ duration_seconds: 0.04, request_id: 'readback-request-id', outcome: 'success' }),

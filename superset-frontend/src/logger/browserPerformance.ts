@@ -20,6 +20,7 @@ import { nanoid } from 'nanoid';
 import { QueryData, SupersetClient } from '@superset-ui/core';
 import { ensureAppRoot } from 'src/utils/navigationUtils';
 import getBootstrapData from 'src/utils/getBootstrapData';
+import type { BootstrapData } from 'src/types/bootstrapTypes';
 import { Logger } from './LogUtils';
 
 type Outcome = 'started' | 'success' | 'error' | 'abandoned';
@@ -51,6 +52,12 @@ export interface BrowserEvent extends Assets {
   backgrounded?: boolean;
   fully_backgrounded?: boolean;
   automation?: boolean;
+  navigation_type?: 'navigate' | 'reload' | 'back_forward' | 'prerender' | 'unknown';
+  route_kind?: 'dashboard' | 'explore' | 'embedded' | 'other';
+  viewport_class?: 'small' | 'medium' | 'large';
+  connection_type?: string;
+  client_version?: string;
+  http_status_code?: number;
   request_id?: string;
   expected_charts?: number;
   completed_charts?: number;
@@ -83,6 +90,7 @@ export interface ChartLoad {
   cacheHit?: boolean;
   asyncExecution?: boolean;
   forceRefresh: boolean;
+  httpStatusCode?: number;
   finished: boolean;
   detach: () => void;
   dashboard?: DashboardView;
@@ -169,12 +177,67 @@ function isAutomation(): boolean {
   return typeof navigator !== 'undefined' && navigator.webdriver === true;
 }
 
+function navigationType(): BrowserEvent['navigation_type'] {
+  if (
+    typeof performance === 'undefined' ||
+    typeof performance.getEntriesByType !== 'function'
+  ) {
+    return 'unknown';
+  }
+  const [entry] = performance.getEntriesByType('navigation') as PerformanceNavigationTiming[];
+  const type = entry?.type;
+  return type === 'navigate' || type === 'reload' || type === 'back_forward' || type === 'prerender'
+    ? type
+    : 'unknown';
+}
+
+function routeKind(bootstrap: BootstrapData): BrowserEvent['route_kind'] {
+  if (bootstrap.embedded) return 'embedded';
+  if (typeof window === 'undefined') return 'other';
+  const path = window.location.pathname;
+  if (path.includes('/embedded/')) return 'embedded';
+  if (path.includes('/explore')) return 'explore';
+  if (path.includes('/dashboard')) return 'dashboard';
+  return 'other';
+}
+
+function viewportClass(): BrowserEvent['viewport_class'] {
+  if (typeof window === 'undefined' || !window.innerWidth) return 'small';
+  if (window.innerWidth < 768) return 'small';
+  if (window.innerWidth < 1440) return 'medium';
+  return 'large';
+}
+
+function connectionType(): string | undefined {
+  if (typeof navigator === 'undefined') return undefined;
+  const connection = (navigator as Navigator & {
+    connection?: { effectiveType?: string };
+  }).connection;
+  const effectiveType = connection?.effectiveType;
+  return effectiveType === 'slow-2g' || effectiveType === '2g' || effectiveType === '3g' || effectiveType === '4g'
+    ? effectiveType
+    : undefined;
+}
+
+function clientVersion(bootstrap: BootstrapData): string | undefined {
+  const navbar = bootstrap.common?.navbar_right;
+  return navbar?.version_sha || navbar?.version_string || undefined;
+}
+
 function emit(event: Omit<BrowserEvent, 'browser_event_id'>): void {
-  if (getBootstrapData().common.conf.OBSERVABILITY_ENABLED !== true) return;
+  const bootstrap = getBootstrapData();
+  if (bootstrap.common.conf.OBSERVABILITY_ENABLED !== true) return;
+  const version = clientVersion(bootstrap);
+  const connection = connectionType();
   pending.push({
     ...event,
     browser_event_id: nanoid(),
     automation: isAutomation(),
+    navigation_type: navigationType(),
+    route_kind: routeKind(bootstrap),
+    viewport_class: viewportClass(),
+    ...(version === undefined ? {} : { client_version: version }),
+    ...(connection === undefined ? {} : { connection_type: connection }),
   });
   if (pending.length >= MAX_EVENTS) {
     flushBrowserEvents();
@@ -259,6 +322,9 @@ function emitChart(
     async_execution: load.asyncExecution,
     force_refresh: load.forceRefresh,
     duration_seconds: wallSeconds,
+    ...(eventName === 'chart.request' && load.httpStatusCode !== undefined
+      ? { http_status_code: load.httpStatusCode }
+      : {}),
     ...(active === undefined
       ? {}
       : {
@@ -383,6 +449,7 @@ export function observeChartResponse(
   requestStarted?: number,
 ): void {
   if (!load || load.finished) return;
+  load.httpStatusCode = response.status;
   load.asyncExecution = load.asyncExecution === true || response.status === 202;
   const requestId = response.headers?.get('X-Superset-Request-Id');
   if (requestId && /^[A-Za-z0-9_-]{8,64}$/.test(requestId)) {
