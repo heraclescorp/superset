@@ -81,6 +81,7 @@ beforeEach(() => {
 afterEach(() => {
   Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
   document.dispatchEvent(new Event('visibilitychange'));
+  Object.defineProperty(navigator, 'webdriver', { configurable: true, value: false });
   window.dispatchEvent(new Event('pagehide'));
   performanceSpy.mockRestore();
   jest.useRealTimers();
@@ -172,6 +173,21 @@ test('flags a load that completes entirely in the background', () => {
   expect(chartLoad?.active_duration_seconds).toBe(0);
   expect(chartLoad?.hidden_duration_seconds).toBeCloseTo(0.05);
   expect(chartLoad?.fully_backgrounded).toBe(true);
+});
+
+test('marks Playwright browser loads as automation', () => {
+  Object.defineProperty(navigator, 'webdriver', { configurable: true, value: true });
+  const view = openDashboardView(32, [7]);
+  const load = beginChartLoad(7, { chart_id: 7, dashboard_id: 32 }, new AbortController().signal);
+  clock = 25;
+  const data: QueryData[] = [];
+  chartDataReady(load, data);
+  chartRenderFinished(data);
+  closeDashboardView(view);
+  flushBrowserEvents();
+  const observed = events();
+  expect(observed.find(event => event.event_name === 'chart.load' && event.outcome === 'success')?.automation).toBe(true);
+  expect(observed.find(event => event.event_name === 'dashboard.load' && event.outcome === 'success')?.automation).toBe(true);
 });
 
 test('superseded results and abort callbacks cannot complete the replacement load', () => {

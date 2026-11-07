@@ -189,6 +189,7 @@ def _parse_event(value: object) -> dict[str, Any] | None:  # noqa: C901
         "force_refresh",
         "backgrounded",
         "fully_backgrounded",
+        "automation",
     ):
         if key in value:
             if type(value[key]) is not bool:
@@ -344,6 +345,7 @@ def ingest_browser_events(events: object) -> None:  # noqa: C901
                                         "cache_hit",
                                         "async_execution",
                                         "force_refresh",
+                                        "automation",
                                     )
                                     if key in parsed
                                 },

@@ -50,6 +50,7 @@ export interface BrowserEvent extends Assets {
   hidden_duration_seconds?: number;
   backgrounded?: boolean;
   fully_backgrounded?: boolean;
+  automation?: boolean;
   request_id?: string;
   expected_charts?: number;
   completed_charts?: number;
@@ -164,9 +165,17 @@ export function flushBrowserEvents(unloading = false): void {
 }
 
 
+function isAutomation(): boolean {
+  return typeof navigator !== 'undefined' && navigator.webdriver === true;
+}
+
 function emit(event: Omit<BrowserEvent, 'browser_event_id'>): void {
   if (getBootstrapData().common.conf.OBSERVABILITY_ENABLED !== true) return;
-  pending.push({ ...event, browser_event_id: nanoid() });
+  pending.push({
+    ...event,
+    browser_event_id: nanoid(),
+    automation: isAutomation(),
+  });
   if (pending.length >= MAX_EVENTS) {
     flushBrowserEvents();
   } else if (flushTimer === undefined) {

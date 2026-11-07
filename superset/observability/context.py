@@ -172,6 +172,7 @@ _BOOL_KEYS = frozenset(
         "force_refresh",
         "backgrounded",
         "fully_backgrounded",
+        "automation",
         "force_cancel",
         "abandoned",
         "joined",

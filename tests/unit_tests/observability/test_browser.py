@@ -200,6 +200,7 @@ def test_active_duration_is_allowlisted_and_used_for_metrics(
                     hidden_duration_seconds=0.15,
                     backgrounded=True,
                     fully_backgrounded=False,
+                    automation=True,
                 )
             ]
         },
@@ -211,8 +212,10 @@ def test_active_duration_is_allowlisted_and_used_for_metrics(
     assert fields["hidden_duration_seconds"] == 0.15
     assert fields["backgrounded"] is True
     assert fields["fully_backgrounded"] is False
-    observed_args, _ = ingress.observed.call_args
+    assert fields["automation"] is True
+    observed_args, observed_kwargs = ingress.observed.call_args
     assert observed_args == ("browser.chart.load", 0.1)
+    assert observed_kwargs["automation"] is True
 
 
 def test_guest_form_batches_use_authorized_assets_and_canonical_pseudoprincipal(
@@ -295,6 +298,8 @@ def test_unauthorized_or_inconsistent_assets_are_silently_dropped(
         {"hidden_duration_seconds": 0.5},
         {"backgrounded": "true"},
         {"fully_backgrounded": 1},
+        {"automation": "true"},
+        {"automation": 1},
         {"chart_id": True},
         {"chart_id": "7"},
         {"phase": ["load"]},
