@@ -130,6 +130,7 @@ _NUMBER_KEYS = frozenset(
         "rows",
         "result_bytes",
         "duration_seconds",
+        "active_duration_seconds",
         "scheduled_at",
         "submitted_at",
         "published_at",

@@ -46,6 +46,7 @@ export interface BrowserEvent extends Assets {
   phase: Phase;
   outcome: Outcome;
   duration_seconds: number;
+  active_duration_seconds?: number;
   request_id?: string;
   expected_charts?: number;
   completed_charts?: number;
@@ -58,6 +59,7 @@ export interface DashboardView {
   id: string;
   dashboardId: number;
   started: number;
+  hiddenAtStart: number;
   expected?: Set<number>;
   completed: Set<number>;
   failed: boolean;
@@ -70,6 +72,7 @@ export interface ChartLoad {
   key: string;
   assets: Assets;
   started: number;
+  hiddenAtStart: number;
   dataReady?: number;
   renderStarted?: number;
   requestId?: string;
@@ -93,6 +96,34 @@ let pending: BrowserEvent[] = [];
 let flushTimer: number | undefined;
 let listening = false;
 let csrfToken: string | undefined;
+let hiddenSince: number | null = null;
+let hiddenAccumulated = 0;
+let visibilityListening = false;
+
+function hiddenNow(): number {
+  const now = performance.now();
+  return hiddenAccumulated + (hiddenSince !== null ? now - hiddenSince : 0);
+}
+
+function ensureVisibilityTracking(): void {
+  if (visibilityListening || typeof document === 'undefined') return;
+  visibilityListening = true;
+  if (document.visibilityState === 'hidden') hiddenSince = performance.now();
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      hiddenSince ??= performance.now();
+    } else if (hiddenSince !== null) {
+      hiddenAccumulated += performance.now() - hiddenSince;
+      hiddenSince = null;
+    }
+  });
+}
+
+function activeSeconds(started: number, hiddenAtStart: number): number {
+  const wall = Math.max(0, performance.now() - started);
+  const hidden = Math.max(0, hiddenNow() - hiddenAtStart);
+  return Math.max(0, wall - hidden) / 1000;
+}
 
 export function flushBrowserEvents(unloading = false): void {
   if (flushTimer !== undefined) {
@@ -148,6 +179,7 @@ function emitDashboard(view: DashboardView, outcome: Outcome): void {
     phase: 'load',
     outcome,
     duration_seconds: Math.max(0, performance.now() - view.started) / 1000,
+    active_duration_seconds: activeSeconds(view.started, view.hiddenAtStart),
     expected_charts: view.expected?.size,
     completed_charts: view.completed.size,
   });
@@ -160,6 +192,7 @@ function dashboardView(dashboardId: number): DashboardView {
     dashboardId,
     // Include route/bootstrap time, including soft navigation's marked origin.
     started: performance.now() - Math.max(0, Logger.getTimestamp()),
+    hiddenAtStart: hiddenNow(),
     completed: new Set(),
     failed: false,
     finished: false,
@@ -189,6 +222,7 @@ function emitChart(
   outcome: Outcome,
   started: number,
 ): void {
+  const wallSeconds = Math.max(0, performance.now() - started) / 1000;
   emit({
     ...load.assets,
     event_name: eventName,
@@ -200,7 +234,10 @@ function emitChart(
     cache_hit: load.cacheHit,
     async_execution: load.asyncExecution,
     force_refresh: load.forceRefresh,
-    duration_seconds: Math.max(0, performance.now() - started) / 1000,
+    duration_seconds: wallSeconds,
+    ...(eventName === 'chart.load'
+      ? { active_duration_seconds: activeSeconds(started, load.hiddenAtStart) }
+      : {}),
   });
 }
 export function finishChartLoad(
@@ -235,6 +272,7 @@ export function closeDashboardView(view: DashboardView | undefined): void {
 function listen(): void {
   if (listening) return;
   listening = true;
+  ensureVisibilityTracking();
   try {
     SupersetClient.getCSRFToken()
       .then(token => {
@@ -296,6 +334,7 @@ export function beginChartLoad(
     key: loadKey,
     assets: loadAssets,
     started: performance.now(),
+    hiddenAtStart: hiddenNow(),
     forceRefresh,
     finished: false,
     detach: () => signal.removeEventListener('abort', onAbort),
