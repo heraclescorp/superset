@@ -64,6 +64,11 @@ EVENT_PHASES = {
     "dashboard.load": {"load"},
 }
 OUTCOMES = {"started", "success", "error", "abandoned"}
+NAVIGATION_TYPES = {"navigate", "reload", "back_forward", "prerender", "unknown"}
+ROUTE_KINDS = {"dashboard", "explore", "embedded", "other"}
+VIEWPORT_CLASSES = {"small", "medium", "large"}
+CONNECTION_TYPES = {"slow-2g", "2g", "3g", "4g"}
+CLIENT_VERSION = re.compile(r"[A-Za-z0-9._+-]{1,64}\Z")
 P = ParamSpec("P")
 _AssetKey: TypeAlias = tuple[bool, int | None, int | None, int | None, str | None]
 
@@ -152,6 +157,25 @@ def _parse_event(value: object) -> dict[str, Any] | None:  # noqa: C901
         "outcome": outcome,
         "duration_seconds": float(duration),
     }
+    active_duration = value.get("active_duration_seconds")
+    if active_duration is not None:
+        if (
+            type(active_duration) not in (int, float)
+            or not math.isfinite(active_duration)
+            or not 0 <= active_duration <= MAX_DURATION_SECONDS
+        ):
+            return None
+        parsed["active_duration_seconds"] = float(active_duration)
+    hidden_duration = value.get("hidden_duration_seconds")
+    if hidden_duration is not None:
+        if (
+            type(hidden_duration) not in (int, float)
+            or not math.isfinite(hidden_duration)
+            or not 0 <= hidden_duration <= MAX_DURATION_SECONDS
+            or hidden_duration > float(duration) + 1e-6
+        ):
+            return None
+        parsed["hidden_duration_seconds"] = float(hidden_duration)
     for key in ("browser_load_id", "request_id"):
         if (identifier := _identifier(value.get(key))) is not None:
             parsed[key] = identifier
@@ -164,11 +188,38 @@ def _parse_event(value: object) -> dict[str, Any] | None:  # noqa: C901
         count = value.get(key)
         if type(count) is int and 0 <= count <= 10000:
             parsed[key] = count
-    for key in ("cache_hit", "async_execution", "force_refresh"):
+    for key in (
+        "cache_hit",
+        "async_execution",
+        "force_refresh",
+        "backgrounded",
+        "fully_backgrounded",
+        "automation",
+    ):
         if key in value:
             if type(value[key]) is not bool:
                 return None
             parsed[key] = value[key]
+    for key, allowed in (
+        ("navigation_type", NAVIGATION_TYPES),
+        ("route_kind", ROUTE_KINDS),
+        ("viewport_class", VIEWPORT_CLASSES),
+        ("connection_type", CONNECTION_TYPES),
+    ):
+        if key in value:
+            if not isinstance(value[key], str) or value[key] not in allowed:
+                return None
+            parsed[key] = value[key]
+    if "client_version" in value:
+        version = value["client_version"]
+        if not isinstance(version, str) or not CLIENT_VERSION.fullmatch(version):
+            return None
+        parsed["client_version"] = version
+    if "http_status_code" in value:
+        status = value["http_status_code"]
+        if type(status) is not int or not 100 <= status <= 599:
+            return None
+        parsed["http_status_code"] = status
     if event_name.startswith("chart.") and "browser_load_id" not in parsed:
         return None
     return parsed
@@ -305,7 +356,10 @@ def ingest_browser_events(events: object) -> None:  # noqa: C901
                         try:
                             observe_duration(
                                 f"browser.{event_name}",
-                                parsed["duration_seconds"],
+                                parsed.get(
+                                    "active_duration_seconds",
+                                    parsed["duration_seconds"],
+                                ),
                                 source="browser",
                                 phase=parsed["phase"],
                                 outcome=parsed["outcome"],
@@ -316,6 +370,11 @@ def ingest_browser_events(events: object) -> None:  # noqa: C901
                                         "cache_hit",
                                         "async_execution",
                                         "force_refresh",
+                                        "automation",
+                                        "navigation_type",
+                                        "route_kind",
+                                        "viewport_class",
+                                        "connection_type",
                                     )
                                     if key in parsed
                                 },

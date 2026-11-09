@@ -79,6 +79,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+  document.dispatchEvent(new Event('visibilitychange'));
+  Object.defineProperty(navigator, 'webdriver', { configurable: true, value: false });
   window.dispatchEvent(new Event('pagehide'));
   performanceSpy.mockRestore();
   jest.useRealTimers();
@@ -109,7 +112,7 @@ test('separates data, render and end-to-end timings and completes the dashboard 
     'submit-request-id', 'readback-request-id',
   ]);
   expect(observed.find(event => event.event_name === 'chart.request' && event.request_id === 'readback-request-id'))
-    .toMatchObject({ duration_seconds: 0.02 });
+    .toMatchObject({ duration_seconds: 0.02, http_status_code: 200 });
   expect(observed.find(event => event.event_name === 'chart.data_ready')).toMatchObject({ duration_seconds: 0.1 });
   expect(observed.filter(event => event.event_name === 'chart.render')).toEqual([
     expect.objectContaining({ duration_seconds: 0.04, request_id: 'readback-request-id', outcome: 'success' }),
@@ -127,6 +130,64 @@ test('separates data, render and end-to-end timings and completes the dashboard 
   ]);
   expect(new Set(observed.map(event => event.browser_event_id)).size).toBe(observed.length);
   expect(new Set(observed.map(event => event.browser_view_id))).toEqual(new Set([view?.id]));
+});
+
+test('excludes hidden-tab time from active browser durations', () => {
+  const view = openDashboardView(30, [5]);
+  const load = beginChartLoad(5, { chart_id: 5, dashboard_id: 30 }, new AbortController().signal);
+  clock = 10;
+  Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+  document.dispatchEvent(new Event('visibilitychange'));
+  clock = 60;
+  Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+  document.dispatchEvent(new Event('visibilitychange'));
+  clock = 80;
+  const data: QueryData[] = [];
+  chartDataReady(load, data);
+  chartRenderFinished(data);
+  closeDashboardView(view);
+  flushBrowserEvents();
+  const chartLoad = events().find(event => event.event_name === 'chart.load' && event.outcome === 'success');
+  expect(chartLoad?.duration_seconds).toBeCloseTo(0.08);
+  expect(chartLoad?.active_duration_seconds).toBeCloseTo(0.03);
+  expect(chartLoad?.hidden_duration_seconds).toBeCloseTo(0.05);
+  expect(chartLoad?.backgrounded).toBe(true);
+  expect(chartLoad?.fully_backgrounded).toBe(false);
+  const dashboardLoad = events().find(event => event.event_name === 'dashboard.load' && event.outcome === 'success');
+  expect(dashboardLoad?.active_duration_seconds).toBeCloseTo(0.03);
+  expect(dashboardLoad?.hidden_duration_seconds).toBeCloseTo(0.05);
+});
+
+test('flags a load that completes entirely in the background', () => {
+  Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+  document.dispatchEvent(new Event('visibilitychange'));
+  const view = openDashboardView(31, [6]);
+  const load = beginChartLoad(6, { chart_id: 6, dashboard_id: 31 }, new AbortController().signal);
+  clock = 50;
+  const data: QueryData[] = [];
+  chartDataReady(load, data);
+  chartRenderFinished(data);
+  closeDashboardView(view);
+  flushBrowserEvents();
+  const chartLoad = events().find(event => event.event_name === 'chart.load' && event.outcome === 'success');
+  expect(chartLoad?.active_duration_seconds).toBe(0);
+  expect(chartLoad?.hidden_duration_seconds).toBeCloseTo(0.05);
+  expect(chartLoad?.fully_backgrounded).toBe(true);
+});
+
+test('marks Playwright browser loads as automation', () => {
+  Object.defineProperty(navigator, 'webdriver', { configurable: true, value: true });
+  const view = openDashboardView(32, [7]);
+  const load = beginChartLoad(7, { chart_id: 7, dashboard_id: 32 }, new AbortController().signal);
+  clock = 25;
+  const data: QueryData[] = [];
+  chartDataReady(load, data);
+  chartRenderFinished(data);
+  closeDashboardView(view);
+  flushBrowserEvents();
+  const observed = events();
+  expect(observed.find(event => event.event_name === 'chart.load' && event.outcome === 'success')?.automation).toBe(true);
+  expect(observed.find(event => event.event_name === 'dashboard.load' && event.outcome === 'success')?.automation).toBe(true);
 });
 
 test('superseded results and abort callbacks cannot complete the replacement load', () => {

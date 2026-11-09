@@ -188,6 +188,50 @@ def test_browser_payload_is_allowlisted_and_actor_is_server_derived(
     }
 
 
+def test_active_duration_is_allowlisted_and_used_for_metrics(
+    ingress: SimpleNamespace,
+) -> None:
+    response = ingress.client.post(
+        "/log/?observability=browser",
+        json={
+            "observability_events": [
+                event(
+                    active_duration_seconds=0.1,
+                    hidden_duration_seconds=0.15,
+                    backgrounded=True,
+                    fully_backgrounded=False,
+                    automation=True,
+                    navigation_type="reload",
+                    route_kind="dashboard",
+                    viewport_class="medium",
+                    connection_type="4g",
+                    client_version="7.0.0",
+                    http_status_code=200,
+                )
+            ]
+        },
+    )
+    assert response.status_code == 200
+    _, fields = ingress.emitted.call_args
+    assert fields["duration_seconds"] == 0.25
+    assert fields["active_duration_seconds"] == 0.1
+    assert fields["hidden_duration_seconds"] == 0.15
+    assert fields["backgrounded"] is True
+    assert fields["fully_backgrounded"] is False
+    assert fields["automation"] is True
+    assert fields["navigation_type"] == "reload"
+    assert fields["route_kind"] == "dashboard"
+    assert fields["viewport_class"] == "medium"
+    assert fields["connection_type"] == "4g"
+    assert fields["client_version"] == "7.0.0"
+    assert fields["http_status_code"] == 200
+    observed_args, observed_kwargs = ingress.observed.call_args
+    assert observed_args == ("browser.chart.load", 0.1)
+    assert observed_kwargs["automation"] is True
+    assert observed_kwargs["navigation_type"] == "reload"
+    assert observed_kwargs["route_kind"] == "dashboard"
+
+
 def test_guest_form_batches_use_authorized_assets_and_canonical_pseudoprincipal(
     ingress: SimpleNamespace,
 ) -> None:
@@ -255,6 +299,28 @@ def test_unauthorized_or_inconsistent_assets_are_silently_dropped(
         {"duration_seconds": float("inf")},
         {"duration_seconds": True},
         {"duration_seconds": 86401},
+        {"active_duration_seconds": -1},
+        {"active_duration_seconds": float("nan")},
+        {"active_duration_seconds": float("inf")},
+        {"active_duration_seconds": True},
+        {"active_duration_seconds": 86401},
+        {"hidden_duration_seconds": -1},
+        {"hidden_duration_seconds": float("nan")},
+        {"hidden_duration_seconds": float("inf")},
+        {"hidden_duration_seconds": True},
+        {"hidden_duration_seconds": 86401},
+        {"hidden_duration_seconds": 0.5},
+        {"backgrounded": "true"},
+        {"fully_backgrounded": 1},
+        {"automation": "true"},
+        {"automation": 1},
+        {"navigation_type": "refresh"},
+        {"route_kind": "api"},
+        {"viewport_class": "huge"},
+        {"connection_type": "5g"},
+        {"client_version": "7.0.0;drop"},
+        {"http_status_code": 99},
+        {"http_status_code": "200"},
         {"chart_id": True},
         {"chart_id": "7"},
         {"phase": ["load"]},

@@ -120,6 +120,11 @@ _TOKEN_KEYS = frozenset(
         "http_method",
         "status_class",
         "datasource_type",
+        "navigation_type",
+        "route_kind",
+        "viewport_class",
+        "connection_type",
+        "client_version",
     )
 )
 _NUMBER_KEYS = frozenset(
@@ -130,6 +135,8 @@ _NUMBER_KEYS = frozenset(
         "rows",
         "result_bytes",
         "duration_seconds",
+        "active_duration_seconds",
+        "hidden_duration_seconds",
         "scheduled_at",
         "submitted_at",
         "published_at",
@@ -168,6 +175,9 @@ _BOOL_KEYS = frozenset(
         "cache_hit",
         "async_execution",
         "force_refresh",
+        "backgrounded",
+        "fully_backgrounded",
+        "automation",
         "force_cancel",
         "abandoned",
         "joined",
